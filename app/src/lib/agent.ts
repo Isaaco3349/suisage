@@ -60,23 +60,7 @@ const TOOLS: Groq.Chat.ChatCompletionTool[] = [
       },
     },
   },
-  {
-    type: "function",
-    function: {
-      name: "get_market_summary",
-      description: "Get 24h market summary including last price, volume, price change, high and low for a pool.",
-      parameters: {
-        type: "object",
-        properties: {
-          pool_name: {
-            type: "string",
-            enum: ["SUI_USDC", "DEEP_SUI", "DEEP_USDC"],
-          },
-        },
-        required: ["pool_name"],
-      },
-    },
-  },
+  
   {
     type: "function",
     function: {
