@@ -21,7 +21,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "agent",
-      content: "SuiSage online. I'm ready to trade on DeepBook. Tell me what to do — or ask me to analyze the market.",
+      content: "SuiSage online. I'm monitoring DeepBook markets in real time. Ask me anything — prices, spreads, strategy, or analysis.",
       timestamp: Date.now(),
     },
   ]);
@@ -33,13 +33,19 @@ export default function Home() {
     totalPnl: 0,
     openPositions: [],
   });
+  const [time, setTime] = useState("");
   const bottomRef = useRef<HTMLDivElement>(null);
-  const [mounted, setMounted] = useState(false);
-  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    const tick = () => setTime(new Date().toLocaleTimeString("en-US", { hour12: false }));
+    tick();
+    const id = setInterval(tick, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   async function sendCommand() {
     if (!command.trim() || loading) return;
@@ -47,7 +53,6 @@ export default function Home() {
     setCommand("");
     setMessages((m) => [...m, { role: "user", content: userMsg, timestamp: Date.now() }]);
     setLoading(true);
-
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
@@ -58,137 +63,490 @@ export default function Home() {
       setMessages((m) => [...m, { role: "agent", content: data.result ?? data.error, timestamp: Date.now() }]);
       if (data.state) setAgentState(data.state);
     } catch {
-      setMessages((m) => [...m, { role: "agent", content: "Connection error. Check your API keys.", timestamp: Date.now() }]);
+      setMessages((m) => [...m, { role: "agent", content: "Connection error.", timestamp: Date.now() }]);
     } finally {
       setLoading(false);
     }
   }
 
   const suggestions = [
-    "Check the current SUI/USDC orderbook",
-    "Place a small buy order at market price",
-    "What's my current position?",
-    "Cancel all open orders",
+    "Analyze SUI/USDC market",
+    "Compare pool spreads",
+    "Best entry point for SUI?",
+    "Current liquidity status",
   ];
 
   return (
-    <main style={{ minHeight: "100vh", background: "#0a0a0a", color: "#e5e5e5", fontFamily: "system-ui, sans-serif", display: "flex", flexDirection: "column" }}>
-      {/* Header */}
-      <header style={{ borderBottom: "1px solid #1a1a1a", padding: "16px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <div style={{ width: 8, height: 8, borderRadius: "50%", background: agentState.isRunning ? "#22c55e" : "#6b7280" }} />
-          <span style={{ fontWeight: 600, fontSize: 16 }}>SuiSage</span>
-          <span style={{ fontSize: 12, color: "#6b7280", background: "#1a1a1a", padding: "2px 8px", borderRadius: 20 }}>testnet</span>
+    <>
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
+
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+          background: #040608;
+          color: #e2e8f0;
+          font-family: 'Syne', sans-serif;
+          overflow: hidden;
+          height: 100vh;
+        }
+
+        .bg {
+          position: fixed;
+          inset: 0;
+          z-index: 0;
+          background:
+            radial-gradient(ellipse 80% 60% at 10% 0%, rgba(14, 165, 233, 0.07) 0%, transparent 60%),
+            radial-gradient(ellipse 60% 50% at 90% 100%, rgba(99, 102, 241, 0.06) 0%, transparent 60%),
+            radial-gradient(ellipse 40% 40% at 50% 50%, rgba(20, 184, 166, 0.03) 0%, transparent 70%);
+        }
+
+        .grid-lines {
+          position: fixed;
+          inset: 0;
+          z-index: 0;
+          background-image:
+            linear-gradient(rgba(148,163,184,0.03) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(148,163,184,0.03) 1px, transparent 1px);
+          background-size: 48px 48px;
+        }
+
+        .noise {
+          position: fixed;
+          inset: 0;
+          z-index: 0;
+          opacity: 0.025;
+          background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+          background-size: 256px 256px;
+        }
+
+        .shell {
+          position: relative;
+          z-index: 1;
+          display: flex;
+          flex-direction: column;
+          height: 100vh;
+          max-width: 1100px;
+          margin: 0 auto;
+          padding: 0 24px;
+        }
+
+        /* HEADER */
+        .header {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 20px 0 16px;
+          border-bottom: 1px solid rgba(148,163,184,0.08);
+          flex-shrink: 0;
+        }
+
+        .logo-group {
+          display: flex;
+          align-items: center;
+          gap: 14px;
+        }
+
+        .logo-mark {
+          width: 36px;
+          height: 36px;
+          border-radius: 10px;
+          background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          font-family: 'Space Mono', monospace;
+          font-size: 13px;
+          font-weight: 700;
+          color: #fff;
+          letter-spacing: -1px;
+          flex-shrink: 0;
+        }
+
+        .logo-text {
+          font-size: 18px;
+          font-weight: 800;
+          letter-spacing: -0.5px;
+          color: #f1f5f9;
+        }
+
+        .logo-sub {
+          font-family: 'Space Mono', monospace;
+          font-size: 10px;
+          color: #0ea5e9;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          margin-top: 1px;
+        }
+
+        .header-right {
+          display: flex;
+          align-items: center;
+          gap: 32px;
+        }
+
+        .stat {
+          text-align: right;
+        }
+
+        .stat-label {
+          font-family: 'Space Mono', monospace;
+          font-size: 9px;
+          color: #475569;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          margin-bottom: 3px;
+        }
+
+        .stat-value {
+          font-family: 'Space Mono', monospace;
+          font-size: 14px;
+          font-weight: 700;
+          color: #e2e8f0;
+        }
+
+        .stat-value.green { color: #34d399; }
+
+        .live-badge {
+          display: flex;
+          align-items: center;
+          gap: 6px;
+          background: rgba(14,165,233,0.08);
+          border: 1px solid rgba(14,165,233,0.2);
+          border-radius: 20px;
+          padding: 5px 12px;
+          font-family: 'Space Mono', monospace;
+          font-size: 10px;
+          color: #0ea5e9;
+          letter-spacing: 0.1em;
+        }
+
+        .live-dot {
+          width: 6px;
+          height: 6px;
+          border-radius: 50%;
+          background: #0ea5e9;
+          animation: pulse 2s ease-in-out infinite;
+        }
+
+        @keyframes pulse {
+          0%, 100% { opacity: 1; transform: scale(1); }
+          50% { opacity: 0.4; transform: scale(0.8); }
+        }
+
+        /* STATUS BAR */
+        .statusbar {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          padding: 10px 0;
+          border-bottom: 1px solid rgba(148,163,184,0.05);
+          flex-shrink: 0;
+        }
+
+        .status-left {
+          font-family: 'Space Mono', monospace;
+          font-size: 10px;
+          color: #334155;
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .status-action {
+          color: #64748b;
+          max-width: 400px;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
+
+        .status-right {
+          font-family: 'Space Mono', monospace;
+          font-size: 10px;
+          color: #334155;
+        }
+
+        /* MESSAGES */
+        .messages {
+          flex: 1;
+          overflow-y: auto;
+          padding: 28px 0;
+          display: flex;
+          flex-direction: column;
+          gap: 20px;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(148,163,184,0.1) transparent;
+        }
+
+        .messages::-webkit-scrollbar { width: 4px; }
+        .messages::-webkit-scrollbar-track { background: transparent; }
+        .messages::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.1); border-radius: 2px; }
+
+        .msg-row {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .msg-row.user { align-items: flex-end; }
+        .msg-row.agent { align-items: flex-start; }
+
+        .msg-meta {
+          font-family: 'Space Mono', monospace;
+          font-size: 9px;
+          color: #334155;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+          margin-bottom: 6px;
+          padding: 0 4px;
+        }
+
+        .msg-bubble {
+          max-width: 72%;
+          padding: 14px 18px;
+          font-size: 14px;
+          line-height: 1.65;
+          white-space: pre-wrap;
+        }
+
+        .msg-row.user .msg-bubble {
+          background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+          color: #fff;
+          border-radius: 18px 18px 4px 18px;
+          box-shadow: 0 4px 24px rgba(14,165,233,0.2);
+        }
+
+        .msg-row.agent .msg-bubble {
+          background: rgba(15,23,42,0.8);
+          border: 1px solid rgba(148,163,184,0.1);
+          color: #cbd5e1;
+          border-radius: 4px 18px 18px 18px;
+          backdrop-filter: blur(12px);
+        }
+
+        .typing {
+          display: flex;
+          align-items: center;
+          gap: 5px;
+          padding: 14px 18px;
+          background: rgba(15,23,42,0.8);
+          border: 1px solid rgba(148,163,184,0.1);
+          border-radius: 4px 18px 18px 18px;
+          width: fit-content;
+          backdrop-filter: blur(12px);
+        }
+
+        .typing span {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: #475569;
+          animation: bounce 1.2s ease-in-out infinite;
+        }
+
+        .typing span:nth-child(2) { animation-delay: 0.15s; }
+        .typing span:nth-child(3) { animation-delay: 0.3s; }
+
+        @keyframes bounce {
+          0%, 60%, 100% { transform: translateY(0); }
+          30% { transform: translateY(-5px); background: #0ea5e9; }
+        }
+
+        /* SUGGESTIONS */
+        .suggestions {
+          display: flex;
+          flex-wrap: wrap;
+          gap: 8px;
+          padding: 0 0 16px;
+          flex-shrink: 0;
+        }
+
+        .suggestion-btn {
+          font-family: 'Space Mono', monospace;
+          font-size: 11px;
+          padding: 7px 14px;
+          background: rgba(15,23,42,0.6);
+          border: 1px solid rgba(148,163,184,0.1);
+          border-radius: 20px;
+          color: #64748b;
+          cursor: pointer;
+          transition: all 0.15s;
+          letter-spacing: 0.02em;
+        }
+
+        .suggestion-btn:hover {
+          border-color: rgba(14,165,233,0.3);
+          color: #0ea5e9;
+          background: rgba(14,165,233,0.05);
+        }
+
+        /* INPUT */
+        .input-area {
+          border-top: 1px solid rgba(148,163,184,0.08);
+          padding: 16px 0 20px;
+          flex-shrink: 0;
+        }
+
+        .input-row {
+          display: flex;
+          gap: 10px;
+          align-items: center;
+          background: rgba(15,23,42,0.7);
+          border: 1px solid rgba(148,163,184,0.1);
+          border-radius: 14px;
+          padding: 6px 6px 6px 18px;
+          backdrop-filter: blur(12px);
+          transition: border-color 0.15s;
+        }
+
+        .input-row:focus-within {
+          border-color: rgba(14,165,233,0.3);
+        }
+
+        .input-field {
+          flex: 1;
+          background: transparent;
+          border: none;
+          outline: none;
+          color: #e2e8f0;
+          font-family: 'Syne', sans-serif;
+          font-size: 14px;
+          padding: 8px 0;
+        }
+
+        .input-field::placeholder { color: #334155; }
+
+        .send-btn {
+          background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%);
+          border: none;
+          border-radius: 10px;
+          padding: 10px 20px;
+          color: #fff;
+          font-family: 'Syne', sans-serif;
+          font-size: 13px;
+          font-weight: 600;
+          cursor: pointer;
+          transition: opacity 0.15s;
+          white-space: nowrap;
+          flex-shrink: 0;
+        }
+
+        .send-btn:disabled {
+          opacity: 0.3;
+          cursor: default;
+        }
+
+        .send-btn:not(:disabled):hover { opacity: 0.85; }
+
+        /* NETWORK TAG */
+        .net-tag {
+          font-family: 'Space Mono', monospace;
+          font-size: 9px;
+          padding: 3px 8px;
+          background: rgba(99,102,241,0.1);
+          border: 1px solid rgba(99,102,241,0.2);
+          border-radius: 4px;
+          color: #818cf8;
+          letter-spacing: 0.1em;
+          text-transform: uppercase;
+        }
+      `}</style>
+
+      <div className="bg" />
+      <div className="grid-lines" />
+      <div className="noise" />
+
+      <div className="shell">
+        {/* Header */}
+        <header className="header">
+          <div className="logo-group">
+            <div className="logo-mark">SS</div>
+            <div>
+              <div className="logo-text">SuiSage</div>
+              <div className="logo-sub">DeepBook Intelligence</div>
+            </div>
+            <span className="net-tag">Testnet</span>
+          </div>
+          <div className="header-right">
+            <div className="stat">
+              <div className="stat-label">Trades</div>
+              <div className="stat-value">{agentState.tradeCount}</div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">PNL</div>
+              <div className={`stat-value ${agentState.totalPnl >= 0 ? "green" : ""}`}>
+                {agentState.totalPnl >= 0 ? "+" : ""}{agentState.totalPnl.toFixed(2)} SUI
+              </div>
+            </div>
+            <div className="stat">
+              <div className="stat-label">Positions</div>
+              <div className="stat-value">{agentState.openPositions.length}</div>
+            </div>
+            <div className="live-badge">
+              <div className="live-dot" />
+              {time}
+            </div>
+          </div>
+        </header>
+
+        {/* Status bar */}
+        <div className="statusbar">
+          <div className="status-left">
+            <span>›</span>
+            <span className="status-action">{agentState.lastAction}</span>
+          </div>
+          <div className="status-right">DeepBook V3 · Sui Overflow 2026</div>
         </div>
-        <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 2 }}>TRADES</div>
-            <div style={{ fontWeight: 600 }}>{agentState.tradeCount}</div>
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 2 }}>PNL</div>
-            <div style={{ fontWeight: 600, color: agentState.totalPnl >= 0 ? "#22c55e" : "#ef4444" }}>
-              {agentState.totalPnl >= 0 ? "+" : ""}{agentState.totalPnl.toFixed(2)} SUI
+
+        {/* Messages */}
+        <div className="messages">
+          {messages.map((msg, i) => (
+            <div key={i} className={`msg-row ${msg.role}`}>
+              <div className="msg-meta">
+                {msg.role === "agent" ? "SuiSage" : "You"} · {new Date(msg.timestamp).toLocaleTimeString()}
+              </div>
+              <div className="msg-bubble">{msg.content}</div>
             </div>
-          </div>
-          <div style={{ textAlign: "center" }}>
-            <div style={{ color: "#6b7280", fontSize: 11, marginBottom: 2 }}>POSITIONS</div>
-            <div style={{ fontWeight: 600 }}>{agentState.openPositions.length}</div>
-          </div>
+          ))}
+          {loading && (
+            <div className="msg-row agent">
+              <div className="msg-meta">SuiSage · thinking</div>
+              <div className="typing">
+                <span /><span /><span />
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
         </div>
-      </header>
 
-      {/* Status bar */}
-      <div style={{ padding: "8px 24px", background: "#111", borderBottom: "1px solid #1a1a1a", fontSize: 12, color: "#6b7280" }}>
-        Last action: <span style={{ color: "#a3a3a3" }}>{agentState.lastAction}</span>
-      </div>
-
-      {/* Messages */}
-      <div style={{ flex: 1, overflowY: "auto", padding: "24px", display: "flex", flexDirection: "column", gap: 16, maxWidth: 800, width: "100%", margin: "0 auto" }}>
-        {messages.map((msg, i) => (
-          <div key={i} style={{ display: "flex", flexDirection: "column", alignItems: msg.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{
-              maxWidth: "80%",
-              padding: "12px 16px",
-              borderRadius: msg.role === "user" ? "16px 16px 4px 16px" : "16px 16px 16px 4px",
-              background: msg.role === "user" ? "#1d4ed8" : "#1a1a1a",
-              border: msg.role === "agent" ? "1px solid #2a2a2a" : "none",
-              fontSize: 14,
-              lineHeight: 1.6,
-              whiteSpace: "pre-wrap",
-            }}>
-              {msg.content}
-            </div>
-            <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
-            {msg.role === "agent" ? "SuiSage" : "You"} · {mounted ? new Date(msg.timestamp).toLocaleTimeString() : ""}
-            </div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ display: "flex", alignItems: "flex-start" }}>
-            <div style={{ padding: "12px 16px", background: "#1a1a1a", border: "1px solid #2a2a2a", borderRadius: "16px 16px 16px 4px", fontSize: 14, color: "#6b7280" }}>
-              Thinking...
-            </div>
-          </div>
-        )}
-        <div ref={bottomRef} />
-      </div>
-
-      {/* Suggestions */}
-      {messages.length <= 2 && (
-        <div style={{ padding: "0 24px 16px", maxWidth: 800, width: "100%", margin: "0 auto" }}>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+        {/* Suggestions */}
+        {messages.length <= 2 && (
+          <div className="suggestions">
             {suggestions.map((s) => (
-              <button
-                key={s}
-                onClick={() => setCommand(s)}
-                style={{ fontSize: 12, padding: "6px 12px", background: "transparent", border: "1px solid #2a2a2a", borderRadius: 20, color: "#9ca3af", cursor: "pointer" }}
-              >
+              <button key={s} className="suggestion-btn" onClick={() => setCommand(s)}>
                 {s}
               </button>
             ))}
           </div>
-        </div>
-      )}
+        )}
 
-      {/* Input */}
-      <div style={{ borderTop: "1px solid #1a1a1a", padding: "16px 24px", background: "#0a0a0a" }}>
-        <div style={{ maxWidth: 800, margin: "0 auto", display: "flex", gap: 12 }}>
-          <input
-            value={command}
-            onChange={(e) => setCommand(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendCommand()}
-            placeholder="Tell SuiSage what to do..."
-            disabled={loading}
-            style={{
-              flex: 1,
-              background: "#111",
-              border: "1px solid #2a2a2a",
-              borderRadius: 12,
-              padding: "12px 16px",
-              color: "#e5e5e5",
-              fontSize: 14,
-              outline: "none",
-            }}
-          />
-          <button
-            onClick={sendCommand}
-            disabled={loading || !command.trim()}
-            style={{
-              padding: "12px 20px",
-              background: loading || !command.trim() ? "#1a1a1a" : "#1d4ed8",
-              border: "none",
-              borderRadius: 12,
-              color: loading || !command.trim() ? "#4b5563" : "#fff",
-              cursor: loading || !command.trim() ? "default" : "pointer",
-              fontSize: 14,
-              fontWeight: 500,
-            }}
-          >
-            Send
-          </button>
+        {/* Input */}
+        <div className="input-area">
+          <div className="input-row">
+            <input
+              className="input-field"
+              value={command}
+              onChange={(e) => setCommand(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendCommand()}
+              placeholder="Ask SuiSage anything about the market..."
+              disabled={loading}
+            />
+            <button className="send-btn" onClick={sendCommand} disabled={loading || !command.trim()}>
+              {loading ? "Thinking..." : "Send →"}
+            </button>
+          </div>
         </div>
       </div>
-    </main>
+    </>
   );
 }
