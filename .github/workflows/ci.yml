@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+jobs:
+  move-tests:
+    name: Sui Move tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Sui CLI
+        run: |
+          curl -fsSL https://github.com/MystenLabs/sui/releases/download/testnet-v1.26.2/sui-testnet-v1.26.2-ubuntu-x86_64.tgz | tar -xz
+          sudo mv sui /usr/local/bin/sui
+          sui --version
+
+      - name: Run Move tests
+        working-directory: ./move
+        run: sui move test
+
+  frontend-build:
+    name: Next.js build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ./app
+        run: npm install
+
+      - name: Build
+        working-directory: ./app
+        env:
+          ANTHROPIC_API_KEY: placeholder
+          SUI_PRIVATE_KEY: placeholder
+          NEXT_PUBLIC_SUI_NETWORK: testnet
+          NEXT_PUBLIC_DEEPBOOK_PACKAGE_ID: "0x0"
+          WALRUS_AGGREGATOR_URL: https://aggregator.walrus-testnet.walrus.space
+          WALRUS_PUBLISHER_URL: https://publisher.walrus-testnet.walrus.space
+        run: npm run build
