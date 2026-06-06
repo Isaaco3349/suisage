@@ -21,7 +21,7 @@ export default function Home() {
   const [messages, setMessages] = useState<Message[]>([
     {
       role: "agent",
-      content: "SuiPilot online. I'm ready to trade on DeepBook. Tell me what to do — or ask me to analyze the market.",
+      content: "SuiSage online. I'm ready to trade on DeepBook. Tell me what to do — or ask me to analyze the market.",
       timestamp: Date.now(),
     },
   ]);
@@ -34,6 +34,8 @@ export default function Home() {
     openPositions: [],
   });
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => { setMounted(true); }, []);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -75,7 +77,7 @@ export default function Home() {
       <header style={{ borderBottom: "1px solid #1a1a1a", padding: "16px 24px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ width: 8, height: 8, borderRadius: "50%", background: agentState.isRunning ? "#22c55e" : "#6b7280" }} />
-          <span style={{ fontWeight: 600, fontSize: 16 }}>SuiPilot</span>
+          <span style={{ fontWeight: 600, fontSize: 16 }}>SuiSage</span>
           <span style={{ fontSize: 12, color: "#6b7280", background: "#1a1a1a", padding: "2px 8px", borderRadius: 20 }}>testnet</span>
         </div>
         <div style={{ display: "flex", gap: 24, fontSize: 13 }}>
@@ -118,7 +120,7 @@ export default function Home() {
               {msg.content}
             </div>
             <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
-              {msg.role === "agent" ? "SuiPilot" : "You"} · {new Date(msg.timestamp).toLocaleTimeString()}
+            {msg.role === "agent" ? "SuiSage" : "You"} · {mounted ? new Date(msg.timestamp).toLocaleTimeString() : ""}
             </div>
           </div>
         ))}
@@ -156,7 +158,7 @@ export default function Home() {
             value={command}
             onChange={(e) => setCommand(e.target.value)}
             onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendCommand()}
-            placeholder="Tell SuiPilot what to do..."
+            placeholder="Tell SuiSage what to do..."
             disabled={loading}
             style={{
               flex: 1,
