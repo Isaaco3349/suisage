@@ -25,7 +25,6 @@ export interface Position {
 export interface AgentCommand {
   type: "natural_language" | "direct";
   input: string;
-  poolId?: string;
 }
 
 export const agentState: AgentState = {
@@ -36,138 +35,60 @@ export const agentState: AgentState = {
   tradeCount: 0,
 };
 
-const TOOLS: Groq.Chat.ChatCompletionTool[] = [
-  {
-    type: "function",
-    function: {
-      name: "get_orderbook",
-      description: "Fetch the live orderbook bids and asks for a DeepBook trading pool.",
-      parameters: {
-        type: "object",
-        properties: {
-          pool_name: {
-            type: "string",
-            description: "Trading pair: SUI_USDC, DEEP_SUI, or DEEP_USDC",
-          },
-        },
-        required: ["pool_name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_recent_trades",
-      description: "Fetch the most recent trades executed in a DeepBook pool.",
-      parameters: {
-        type: "object",
-        properties: {
-          pool_name: {
-            type: "string",
-            description: "Trading pair: SUI_USDC, DEEP_SUI, or DEEP_USDC",
-          },
-        },
-        required: ["pool_name"],
-      },
-    },
-  },
-  {
-    type: "function",
-    function: {
-      name: "get_all_tickers",
-      description: "Get price and volume ticker data for all available DeepBook pools.",
-      parameters: {
-        type: "object",
-        properties: {},
-        required: [],
-      },
-    },
-  },
-];
-
 export async function runAgentCommand(command: AgentCommand): Promise<string> {
   const keypair = getAgentKeypair();
   const agentAddress = keypair.getPublicKey().toSuiAddress();
   const balance = await getBalance(agentAddress);
 
+  // Fetch all market data upfront — no tool calls needed
+  const [suiUsdc, deepSui, tickers] = await Promise.allSettled([
+    getOrderbook("SUI_USDC"),
+    getOrderbook("DEEP_SUI"),
+    getTicker(),
+  ]);
+
+  const marketData = {
+    SUI_USDC: suiUsdc.status === "fulfilled" ? suiUsdc.value : null,
+    DEEP_SUI: deepSui.status === "fulfilled" ? deepSui.value : null,
+    tickers: tickers.status === "fulfilled" ? tickers.value : {},
+  };
+
   const systemPrompt = `You are SuiSage, an autonomous DeFi trading agent on the Sui blockchain.
 You manage a wallet at address ${agentAddress} with a balance of ${Number(balance) / 1e9} SUI.
-You analyze markets on DeepBook v3, Sui's native central limit order book.
+You analyze and execute trades on DeepBook v3, Sui's native central limit order book.
 
-Always fetch live data using your tools before responding to market questions.
-Available pools: SUI_USDC, DEEP_SUI, DEEP_USDC.
-Be concise and mention specific prices, spreads, and volumes from the live data.
+Here is the current live market data:
+
+SUI/USDC Orderbook:
+- Best Bid: ${marketData.SUI_USDC?.bestBid ?? "N/A"}
+- Best Ask: ${marketData.SUI_USDC?.bestAsk ?? "N/A"}
+- Mid Price: ${marketData.SUI_USDC?.midPrice ?? "N/A"}
+- Spread: ${marketData.SUI_USDC?.spread ?? "N/A"}
+- Top Bids: ${JSON.stringify(marketData.SUI_USDC?.bids?.slice(0, 3) ?? [])}
+- Top Asks: ${JSON.stringify(marketData.SUI_USDC?.asks?.slice(0, 3) ?? [])}
+
+DEEP/SUI Orderbook:
+- Best Bid: ${marketData.DEEP_SUI?.bestBid ?? "N/A"}
+- Best Ask: ${marketData.DEEP_SUI?.bestAsk ?? "N/A"}
+- Mid Price: ${marketData.DEEP_SUI?.midPrice ?? "N/A"}
 
 Current open positions: ${JSON.stringify(agentState.openPositions)}
-Total trades executed: ${agentState.tradeCount}`;
+Total trades executed: ${agentState.tradeCount}
+
+Use this live data to answer the user's question. Be concise, mention specific prices and spreads.`;
 
   const messages: Groq.Chat.ChatCompletionMessageParam[] = [
     { role: "system", content: systemPrompt },
     { role: "user", content: command.input },
   ];
 
-  let response = await groq.chat.completions.create({
+  const response = await groq.chat.completions.create({
     model: "llama-3.3-70b-versatile",
     max_tokens: 1024,
-    tools: TOOLS,
-    tool_choice: "auto",
     messages,
   });
 
-  let finalResponse = "";
-
-  while (response.choices[0].finish_reason === "tool_calls") {
-    const toolCalls = response.choices[0].message.tool_calls;
-    if (!toolCalls || toolCalls.length === 0) break;
-
-    messages.push(response.choices[0].message);
-
-    for (const toolCall of toolCalls) {
-      let toolResult: string;
-      try {
-        const input = JSON.parse(toolCall.function.arguments);
-
-        if (toolCall.function.name === "get_orderbook") {
-          const book = await getOrderbook(input.pool_name);
-          toolResult = JSON.stringify({
-            pool: input.pool_name,
-            bestBid: book.bestBid,
-            bestAsk: book.bestAsk,
-            midPrice: book.midPrice,
-            spread: book.spread,
-            topBids: book.bids.slice(0, 5),
-            topAsks: book.asks.slice(0, 5),
-          });
-        } else if (toolCall.function.name === "get_recent_trades") {
-          const trades = await getRecentTrades(input.pool_name);
-          toolResult = JSON.stringify(trades.slice(0, 10));
-        } else if (toolCall.function.name === "get_all_tickers") {
-          const tickers = await getTicker();
-          toolResult = JSON.stringify(tickers);
-        } else {
-          toolResult = "Unknown tool";
-        }
-      } catch (err: any) {
-        toolResult = `Error: ${err.message}`;
-      }
-
-      messages.push({
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: toolResult,
-      });
-    }
-
-    response = await groq.chat.completions.create({
-      model: "llama-3.3-70b-versatile",
-      max_tokens: 1024,
-      tools: TOOLS,
-      tool_choice: "auto",
-      messages,
-    });
-  }
-
-  finalResponse = response.choices[0].message.content ?? "Done.";
+  const finalResponse = response.choices[0].message.content ?? "Done.";
   agentState.lastAction = finalResponse.slice(0, 80);
   return finalResponse;
 }
