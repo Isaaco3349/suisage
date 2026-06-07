@@ -165,7 +165,10 @@ module suisage::agent_vault {
 }
 ```
 
-> Contract written for testnet-v1.73.1. Testnet deployment pending resolution of network-level GitHub git clone restriction in build environment.
+> **Deployed on Sui testnet.**
+> - Package ID: `0x33a37e1500130152e00628aa51dbc9d443c1c5825266bd25c1e6b3ff363489e4`
+> - Transaction: `AVGASjeeJsYhqbXqivqWT1GqgeZ7V6qo8mbuCQ7qhygd`
+> - Explorer: https://suiscan.xyz/testnet/tx/AVGASjeeJsYhqbXqivqWT1GqgeZ7V6qo8mbuCQ7qhygd
 
 ---
 
