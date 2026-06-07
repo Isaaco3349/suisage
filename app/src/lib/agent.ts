@@ -1,7 +1,7 @@
 import Groq from "groq-sdk";
 import { getOrderbook, getTicker } from "./deepbook";
 import { getBalance, getAgentKeypair } from "./sui";
-import { appendToLog } from "./walrus";
+import { logTrade } from "./walrus";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -36,7 +36,17 @@ export const agentState: AgentState = {
   tradeCount: 0,
 };
 
-// Detect if the agent response implies a trade action and log it to Walrus
+export interface TradeEntry {
+  poolId: string;
+  side: string;
+  price: number;
+  quantity: number;
+  blobId: string | null;
+  timestamp: number;
+}
+
+export const tradeLogs: TradeEntry[] = [];
+
 async function maybeLogTrade(response: string, marketData: { SUI_USDC: any; DEEP_SUI: any }) {
   const lower = response.toLowerCase();
   const isBuy = lower.includes("buy") || lower.includes("long") || lower.includes("bid");
@@ -50,13 +60,26 @@ async function maybeLogTrade(response: string, marketData: { SUI_USDC: any; DEEP
 
   if (!price) return;
 
-  await appendToLog({
+  const timestamp = Date.now();
+
+  // Store to Walrus and get the real blob ID back
+  const blobId = await logTrade({
     poolId: pool,
     side,
     price,
-    quantity: 0, // simulated — real quantity would come from tx
-    digest: `sim_${Date.now()}`,
-    timestamp: Date.now(),
+    quantity: 0,
+    digest: "",
+    timestamp,
+  });
+
+  // Save entry with real blob ID for the UI link
+  tradeLogs.push({
+    poolId: pool,
+    side,
+    price,
+    quantity: 0,
+    blobId,
+    timestamp,
   });
 
   agentState.tradeCount += 1;
@@ -117,7 +140,6 @@ Use this live data to answer the user's question. Be concise, mention specific p
   const finalResponse = response.choices[0].message.content ?? "Done.";
   agentState.lastAction = finalResponse.slice(0, 80);
 
-  // Log to Walrus if this looks like a trade action
   await maybeLogTrade(finalResponse, marketData);
 
   return finalResponse;

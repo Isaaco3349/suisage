@@ -322,7 +322,7 @@ export default function Home() {
                     <span className="log-time">{mounted ? new Date(log.timestamp).toLocaleTimeString() : ""}</span>
                     <a
                       className="log-link"
-                      href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${log.digest}`}
+                      href={log.blobId ? `https://aggregator.walrus-testnet.walrus.space/v1/blobs/${log.blobId}` : "#"}
                       target="_blank"
                       rel="noopener noreferrer"
                     >

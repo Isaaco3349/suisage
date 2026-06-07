@@ -1,7 +1,5 @@
-import { getLogIds, fetchTradeLog } from "@/lib/walrus";
+import { tradeLogs } from "@/lib/agent";
 
 export async function GET() {
-  const ids = getLogIds();
-  const logs = await Promise.all(ids.map(id => fetchTradeLog(id)));
-  return Response.json(logs.filter(Boolean));
+  return Response.json(tradeLogs);
 }

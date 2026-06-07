@@ -4,3 +4,4 @@ edition = "2024"
 
 [addresses]
 suisage = "0x0"
+suipilot = "0x0"
