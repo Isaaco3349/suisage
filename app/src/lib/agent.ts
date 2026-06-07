@@ -1,6 +1,7 @@
 import Groq from "groq-sdk";
-import { getOrderbook, getTicker, getRecentTrades } from "./deepbook";
+import { getOrderbook, getTicker } from "./deepbook";
 import { getBalance, getAgentKeypair } from "./sui";
+import { appendToLog } from "./walrus";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
@@ -35,12 +36,37 @@ export const agentState: AgentState = {
   tradeCount: 0,
 };
 
+// Detect if the agent response implies a trade action and log it to Walrus
+async function maybeLogTrade(response: string, marketData: { SUI_USDC: any; DEEP_SUI: any }) {
+  const lower = response.toLowerCase();
+  const isBuy = lower.includes("buy") || lower.includes("long") || lower.includes("bid");
+  const isSell = lower.includes("sell") || lower.includes("short") || lower.includes("ask");
+  if (!isBuy && !isSell) return;
+
+  const side = isBuy ? "buy" : "sell";
+  const pool = lower.includes("deep") ? "DEEP_SUI" : "SUI_USDC";
+  const book = pool === "SUI_USDC" ? marketData.SUI_USDC : marketData.DEEP_SUI;
+  const price = side === "buy" ? (book?.bestAsk ?? 0) : (book?.bestBid ?? 0);
+
+  if (!price) return;
+
+  await appendToLog({
+    poolId: pool,
+    side,
+    price,
+    quantity: 0, // simulated — real quantity would come from tx
+    digest: `sim_${Date.now()}`,
+    timestamp: Date.now(),
+  });
+
+  agentState.tradeCount += 1;
+}
+
 export async function runAgentCommand(command: AgentCommand): Promise<string> {
   const keypair = getAgentKeypair();
   const agentAddress = keypair.getPublicKey().toSuiAddress();
   const balance = await getBalance(agentAddress);
 
-  // Fetch all market data upfront — no tool calls needed
   const [suiUsdc, deepSui, tickers] = await Promise.allSettled([
     getOrderbook("SUI_USDC"),
     getOrderbook("DEEP_SUI"),
@@ -90,5 +116,9 @@ Use this live data to answer the user's question. Be concise, mention specific p
 
   const finalResponse = response.choices[0].message.content ?? "Done.";
   agentState.lastAction = finalResponse.slice(0, 80);
+
+  // Log to Walrus if this looks like a trade action
+  await maybeLogTrade(finalResponse, marketData);
+
   return finalResponse;
 }

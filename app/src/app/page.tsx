@@ -17,6 +17,15 @@ interface Message {
   timestamp: number;
 }
 
+interface TradeLog {
+  poolId: string;
+  side: string;
+  price: number;
+  quantity: number;
+  digest: string;
+  timestamp: number;
+}
+
 export default function Home() {
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<Message[]>([
@@ -36,6 +45,8 @@ export default function Home() {
   });
   const [time, setTime] = useState("");
   const [mounted, setMounted] = useState(false);
+  const [tradeLogs, setTradeLogs] = useState<TradeLog[]>([]);
+  const [logsOpen, setLogsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const account = useCurrentAccount();
   const { isConnected } = useCurrentWallet();
@@ -52,7 +63,22 @@ export default function Home() {
     return () => clearInterval(id);
   }, []);
 
-  // Greet user when wallet connects
+  // Poll trade logs every 10s
+  useEffect(() => {
+    async function fetchLogs() {
+      try {
+        const res = await fetch("/api/logs");
+        if (res.ok) {
+          const data = await res.json();
+          setTradeLogs(data);
+        }
+      } catch {}
+    }
+    fetchLogs();
+    const id = setInterval(fetchLogs, 10000);
+    return () => clearInterval(id);
+  }, []);
+
   useEffect(() => {
     if (isConnected && account) {
       const short = `${account.address.slice(0, 6)}...${account.address.slice(-4)}`;
@@ -82,6 +108,9 @@ export default function Home() {
       const data = await res.json();
       setMessages((m) => [...m, { role: "agent", content: data.result ?? data.error, timestamp: Date.now() }]);
       if (data.state) setAgentState(data.state);
+      // Refresh logs after agent responds
+      const logsRes = await fetch("/api/logs");
+      if (logsRes.ok) setTradeLogs(await logsRes.json());
     } catch {
       setMessages((m) => [...m, { role: "agent", content: "Connection error.", timestamp: Date.now() }]);
     } finally {
@@ -133,8 +162,6 @@ export default function Home() {
 
         .wallet-area { display: flex; align-items: center; gap: 10px; }
         .wallet-addr { font-family: 'Space Mono', monospace; font-size: 10px; color: #34d399; background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); border-radius: 20px; padding: 5px 12px; }
-
-        /* Override dapp-kit connect button */
         .wallet-area button { font-family: 'Syne', sans-serif !important; font-size: 12px !important; font-weight: 600 !important; background: linear-gradient(135deg, #0ea5e9, #6366f1) !important; border: none !important; border-radius: 8px !important; color: #fff !important; padding: 7px 14px !important; cursor: pointer !important; }
 
         .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(148,163,184,0.05); flex-shrink: 0; }
@@ -172,6 +199,28 @@ export default function Home() {
         .send-btn { background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); border: none; border-radius: 10px; padding: 10px 20px; color: #fff; font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; white-space: nowrap; flex-shrink: 0; }
         .send-btn:disabled { opacity: 0.3; cursor: default; }
         .send-btn:not(:disabled):hover { opacity: 0.85; }
+
+        /* Trade Log Drawer */
+        .log-drawer { flex-shrink: 0; border-top: 1px solid rgba(148,163,184,0.08); }
+        .log-toggle { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; cursor: pointer; user-select: none; }
+        .log-toggle-left { display: flex; align-items: center; gap: 8px; font-family: 'Space Mono', monospace; font-size: 10px; color: #475569; letter-spacing: 0.1em; text-transform: uppercase; }
+        .log-dot { width: 6px; height: 6px; border-radius: 50%; background: #6366f1; }
+        .log-count { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 1px 7px; font-size: 9px; color: #818cf8; }
+        .log-chevron { font-size: 10px; color: #334155; transition: transform 0.2s; }
+        .log-chevron.open { transform: rotate(180deg); }
+        .log-body { overflow: hidden; max-height: 0; transition: max-height 0.25s ease; }
+        .log-body.open { max-height: 160px; }
+        .log-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 12px; overflow-y: auto; max-height: 148px; scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.1) transparent; }
+        .log-row { display: flex; align-items: center; gap: 12px; font-family: 'Space Mono', monospace; font-size: 10px; color: #475569; padding: 6px 10px; background: rgba(15,23,42,0.5); border: 1px solid rgba(148,163,184,0.06); border-radius: 6px; }
+        .log-side { font-weight: 700; min-width: 32px; }
+        .log-side.buy { color: #34d399; }
+        .log-side.sell { color: #f87171; }
+        .log-pool { color: #64748b; min-width: 72px; }
+        .log-price { color: #94a3b8; flex: 1; }
+        .log-time { color: #334155; }
+        .log-link { color: #6366f1; text-decoration: none; font-size: 9px; }
+        .log-link:hover { color: #818cf8; }
+        .log-empty { font-family: 'Space Mono', monospace; font-size: 10px; color: #334155; padding: 8px 0; text-align: center; }
       `}</style>
 
       <div className="bg" />
@@ -249,6 +298,42 @@ export default function Home() {
             ))}
           </div>
         )}
+
+        {/* Walrus Trade Log Drawer */}
+        <div className="log-drawer">
+          <div className="log-toggle" onClick={() => setLogsOpen((o) => !o)}>
+            <div className="log-toggle-left">
+              <div className="log-dot" />
+              Walrus Trade Log
+              <span className="log-count">{tradeLogs.length}</span>
+            </div>
+            <span className={`log-chevron ${logsOpen ? "open" : ""}`}>▲</span>
+          </div>
+          <div className={`log-body ${logsOpen ? "open" : ""}`}>
+            <div className="log-list">
+              {tradeLogs.length === 0 ? (
+                <div className="log-empty">No trades logged yet — ask SuiSage to analyze or recommend a trade</div>
+              ) : (
+                [...tradeLogs].reverse().map((log, i) => (
+                  <div key={i} className="log-row">
+                    <span className={`log-side ${log.side}`}>{log.side.toUpperCase()}</span>
+                    <span className="log-pool">{log.poolId}</span>
+                    <span className="log-price">@ {log.price.toFixed(4)}</span>
+                    <span className="log-time">{mounted ? new Date(log.timestamp).toLocaleTimeString() : ""}</span>
+                    <a
+                      className="log-link"
+                      href={`https://aggregator.walrus-testnet.walrus.space/v1/blobs/${log.digest}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    >
+                      [walrus ↗]
+                    </a>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        </div>
 
         <div className="input-area">
           <div className="input-row">
