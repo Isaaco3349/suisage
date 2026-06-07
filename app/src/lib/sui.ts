@@ -1,4 +1,4 @@
-import { SuiClient, getFullnodeUrl } from "@mysten/sui";
+import { SuiClient, getFullnodeUrl } from "@mysten/sui/client";
 import { Ed25519Keypair } from "@mysten/sui/keypairs/ed25519";
 
 const network = (process.env.NEXT_PUBLIC_SUI_NETWORK as "testnet" | "mainnet" | "devnet") ?? "testnet";
