@@ -23,6 +23,7 @@ interface TradeLog {
   price: number;
   quantity: number;
   digest: string;
+  blobId: string | null;
   timestamp: number;
 }
 
