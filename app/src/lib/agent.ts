@@ -1,146 +1,192 @@
 import Groq from "groq-sdk";
-import { getOrderbook, getTicker } from "./deepbook";
-import { getBalance, getAgentKeypair } from "./sui";
-import { logTrade } from "./walrus";
+import { getOrderbook } from "./deepbook";
+import { getAgentKeypair } from "./sui";
+import { getSuiBalance, chainStamp, getCoinTypeCount, getReferenceGasPrice, tatumConfigured, tatumMatchesApp } from "./tatum";
+import { DEMO_MODE } from "./grader";
+import { complete } from "./llm";
+import { recallLessons, writeMemory, memoryLive, type LessonView } from "./memory";
+import { store, pushEvent, regimeOf, type Signal } from "./store";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 export interface AgentState {
   isRunning: boolean;
   lastAction: string;
-  openPositions: Position[];
-  totalPnl: number;
-  tradeCount: number;
+  signals: number;
+}
+export const agentState: AgentState = { isRunning: false, lastAction: "Idle", signals: 0 };
+
+export interface UsedMemory {
+  blobId: string;
+  sentence: string;
+  retired: boolean;
+}
+export interface AgentResult {
+  reply: string;
+  action: "buy" | "sell" | "hold" | "none";
+  pool: string;
+  regime: string;
+  memoryOn: boolean;
+  memoriesUsed: UsedMemory[];
+  retiredSeen: number;
+  signal?: Signal;
+  dataSource: "indexer" | "fallback";
+  wallet: { address: string; sui: number | null; coinTypes: number | null; via: "tatum" | "unavailable"; gasPrice: string | null };
 }
 
-export interface Position {
-  orderId: string;
-  poolId: string;
-  side: "buy" | "sell";
-  price: number;
-  quantity: number;
-  timestamp: number;
-  status: "open" | "filled" | "cancelled";
+async function walletSnapshot(address: string): Promise<AgentResult["wallet"]> {
+  // Chain reads must never crash the agent. If Tatum is unavailable the agent simply reasons without wallet data.
+  const out: AgentResult["wallet"] = { address, sui: null, coinTypes: null, via: "unavailable", gasPrice: null };
+  if (!tatumConfigured) return out;
+  const gas = await getReferenceGasPrice().catch(() => null);
+  out.gasPrice = gas;
+  if (gas) out.via = "tatum";
+  if (tatumMatchesApp) {
+    const [bal, coins] = await Promise.all([getSuiBalance(address).catch(() => null), getCoinTypeCount(address).catch(() => null)]);
+    if (bal !== null) {
+      out.sui = Number(bal) / 1e9;
+      out.via = "tatum";
+    }
+    out.coinTypes = coins;
+  }
+  return out;
 }
 
-export interface AgentCommand {
-  type: "natural_language" | "direct";
-  input: string;
+function lessonLine(l: LessonView) {
+  return `memory ${l.blobId.slice(0, 8)}. ${l.sentence}${l.retired ? " This lesson was overturned so do not follow it." : ""}`;
 }
 
-export const agentState: AgentState = {
-  isRunning: false,
-  lastAction: "Idle",
-  openPositions: [],
-  totalPnl: 0,
-  tradeCount: 0,
-};
-
-export interface TradeEntry {
-  poolId: string;
-  side: string;
-  price: number;
-  quantity: number;
-  blobId: string | null;
-  timestamp: number;
-}
-
-export const tradeLogs: TradeEntry[] = [];
-
-async function maybeLogTrade(response: string, marketData: { SUI_USDC: any; DEEP_SUI: any }) {
-  const lower = response.toLowerCase();
-  const isBuy = lower.includes("buy") || lower.includes("long") || lower.includes("bid");
-  const isSell = lower.includes("sell") || lower.includes("short") || lower.includes("ask");
-  if (!isBuy && !isSell) return;
-
-  const side = isBuy ? "buy" : "sell";
-  const pool = lower.includes("deep") ? "DEEP_SUI" : "SUI_USDC";
-  const book = pool === "SUI_USDC" ? marketData.SUI_USDC : marketData.DEEP_SUI;
-  const price = side === "buy" ? (book?.bestAsk ?? 0) : (book?.bestBid ?? 0);
-
-  if (!price) return;
-
-  const timestamp = Date.now();
-
-  // Store to Walrus and get the real blob ID back
-  const blobId = await logTrade({
-    poolId: pool,
-    side,
-    price,
-    quantity: 0,
-    digest: "",
-    timestamp,
-  });
-
-  // Save entry with real blob ID for the UI link
-  tradeLogs.push({
-    poolId: pool,
-    side,
-    price,
-    quantity: 0,
-    blobId,
-    timestamp,
-  });
-
-  agentState.tradeCount += 1;
-}
-
-export async function runAgentCommand(command: AgentCommand): Promise<string> {
-  const keypair = getAgentKeypair();
-  const agentAddress = keypair.getPublicKey().toSuiAddress();
-  const balance = await getBalance(agentAddress);
-
-  const [suiUsdc, deepSui, tickers] = await Promise.allSettled([
+export async function runAgent(opts: { input: string; useMemory: boolean; record: boolean }): Promise<AgentResult> {
+  const address = getAgentKeypair().getPublicKey().toSuiAddress();
+  const [wallet, suiUsdc, deepSui] = await Promise.all([
+    walletSnapshot(address),
     getOrderbook("SUI_USDC"),
     getOrderbook("DEEP_SUI"),
-    getTicker(),
   ]);
 
-  const marketData = {
-    SUI_USDC: suiUsdc.status === "fulfilled" ? suiUsdc.value : null,
-    DEEP_SUI: deepSui.status === "fulfilled" ? deepSui.value : null,
-    tickers: tickers.status === "fulfilled" ? tickers.value : {},
+  const sample = suiUsdc.source === "fallback";
+  const mid = suiUsdc.midPrice ?? 0;
+  const spreadBps = mid && suiUsdc.spread ? (suiUsdc.spread / mid) * 1e4 : 0;
+  const regime = regimeOf(spreadBps);
+
+  // 1. RECALL: what has this agent learned (and unlearned) from Walrus Memory?
+  let active: LessonView[] = [];
+  let retired: LessonView[] = [];
+  if (opts.useMemory) {
+    try {
+      const r = await recallLessons(`${opts.input} SUI USDC ${regime} spread`);
+      active = r.active.slice(0, 5);
+      retired = r.retired.slice(0, 3);
+    } catch (e) {
+      console.error("recall failed:", (e as Error).message);
+    }
+  }
+  const memBlock = opts.useMemory
+    ? active.length + retired.length
+      ? [...active, ...retired].map(lessonLine).join("\n")
+      : "No lessons stored yet. You are a rookie."
+    : "MEMORY DISABLED. You have no knowledge of your past trades.";
+
+  const system = `You are SuiSage Recall, a DeFi copilot on Sui DeepBook that learns from its own graded trades.
+Wallet ${address}: ${wallet.sui !== null ? `${wallet.sui.toFixed(3)} SUI${wallet.coinTypes !== null ? ` across ${wallet.coinTypes} coin types` : ""}, read through Tatum` : "balance unavailable right now, do not guess it"}.
+
+MARKET DATA ${sample ? "IS A BUILT IN SAMPLE because the live DeepBook indexer could not be reached. Say clearly that these numbers are sample data and never present them as live." : "is live from the DeepBook indexer."}
+${wallet.gasPrice ? `Network reference gas price ${wallet.gasPrice} MIST, read through Tatum.` : ""}
+SUI USDC pool bid ${suiUsdc.bestBid ?? "N/A"} ask ${suiUsdc.bestAsk ?? "N/A"} mid ${suiUsdc.midPrice ?? "N/A"} spread ${spreadBps.toFixed(1)} bps (regime: ${regime})
+DEEP/SUI bid ${deepSui.bestBid ?? "N/A"} ask ${deepSui.bestAsk ?? "N/A"}
+
+LESSONS FROM YOUR PAST TRADES (Walrus Memory):
+${memBlock}
+
+RULES
+- If an active lesson matches the current setup (same pool, side, regime), it outranks your instinct. Follow it and cite it by writing the word memory followed by its id, for example memory a1b2c3d4.
+- Never follow a lesson that was overturned.
+- Write plainly. No hyphens, slashes, parentheses, semicolons or brackets in the reply. Write pair names like SUI USDC.
+- Respond ONLY with JSON {"reply": string of 2 to 4 sentences, "action": "buy" or "sell" or "hold", "pool": "SUI_USDC" or "DEEP_SUI", "used": array of the ids you relied on}.
+- If the user explicitly asks for a buy signal or a sell signal and the market data is live, issue exactly that action and put the risks in the reply, unless an active lesson says to avoid that exact setup. In that case answer hold and cite the lesson. If the user only asks what to do, use hold when you see no real edge.
+- Paper signals only. Never claim a trade was executed.`;
+
+  const { text } = await complete(
+    groq as any,
+    [
+      { role: "system", content: system },
+      { role: "user", content: opts.input },
+    ],
+    { json: true }
+  );
+
+  let parsed: { reply?: string; action?: string; pool?: string; used?: string[] } = {};
+  try {
+    // some models wrap JSON in text or code fences, so pull out the first object
+    const m = text.match(/\{[\s\S]*\}/);
+    parsed = JSON.parse(m ? m[0] : text);
+  } catch {
+    parsed = { reply: text.trim() || "Done", action: "hold" };
+  }
+  const action = (["buy", "sell", "hold"].includes(parsed.action ?? "") ? parsed.action : "hold") as AgentResult["action"];
+  const pool = parsed.pool === "DEEP_SUI" ? "DEEP_SUI" : "SUI_USDC";
+  const reply = parsed.reply ?? "Done.";
+
+  const fromText = [...reply.matchAll(/memory ([0-9A-Za-z_-]{8})/g)].map((m) => m[1]);
+  const citedPrefixes = new Set([...(parsed.used ?? []).map((u) => String(u).replace(/[\[\]]/g, "").slice(0, 8)), ...fromText]);
+  const memoriesUsed: UsedMemory[] = [...active, ...retired]
+    .filter((l) => citedPrefixes.has(l.blobId.slice(0, 8)))
+    .map((l) => ({ blobId: l.blobId, sentence: l.sentence, retired: l.retired }));
+
+  const result: AgentResult = {
+    reply,
+    action,
+    pool,
+    regime,
+    dataSource: suiUsdc.source,
+    memoryOn: opts.useMemory,
+    memoriesUsed,
+    retiredSeen: retired.length,
+    wallet,
   };
 
-  const systemPrompt = `You are SuiSage, an autonomous DeFi trading agent on the Sui blockchain.
-You manage a wallet at address ${agentAddress} with a balance of ${Number(balance) / 1e9} SUI.
-You analyze and execute trades on DeepBook v3, Sui's native central limit order book.
-
-Here is the current live market data:
-
-SUI/USDC Orderbook:
-- Best Bid: ${marketData.SUI_USDC?.bestBid ?? "N/A"}
-- Best Ask: ${marketData.SUI_USDC?.bestAsk ?? "N/A"}
-- Mid Price: ${marketData.SUI_USDC?.midPrice ?? "N/A"}
-- Spread: ${marketData.SUI_USDC?.spread ?? "N/A"}
-- Top Bids: ${JSON.stringify(marketData.SUI_USDC?.bids?.slice(0, 3) ?? [])}
-- Top Asks: ${JSON.stringify(marketData.SUI_USDC?.asks?.slice(0, 3) ?? [])}
-
-DEEP/SUI Orderbook:
-- Best Bid: ${marketData.DEEP_SUI?.bestBid ?? "N/A"}
-- Best Ask: ${marketData.DEEP_SUI?.bestAsk ?? "N/A"}
-- Mid Price: ${marketData.DEEP_SUI?.midPrice ?? "N/A"}
-
-Current open positions: ${JSON.stringify(agentState.openPositions)}
-Total trades executed: ${agentState.tradeCount}
-
-Use this live data to answer the user's question. Be concise, mention specific prices and spreads.`;
-
-  const messages: Groq.Chat.ChatCompletionMessageParam[] = [
-    { role: "system", content: systemPrompt },
-    { role: "user", content: command.input },
-  ];
-
-  const response = await groq.chat.completions.create({
-    model: "llama-3.3-70b-versatile",
-    max_tokens: 1024,
-    messages,
-  });
-
-  const finalResponse = response.choices[0].message.content ?? "Done.";
-  agentState.lastAction = finalResponse.slice(0, 80);
-
-  await maybeLogTrade(finalResponse, marketData);
-
-  return finalResponse;
+  // 2. SIGNAL: anchor to a Sui checkpoint through Tatum, remember who influenced it.
+  if (opts.record && sample && !DEMO_MODE && (action === "buy" || action === "sell")) {
+    pushEvent({ type: "skip", text: "Market data is a sample right now so no signal was recorded" });
+  } else if (opts.record && (action === "buy" || action === "sell")) {
+    const book = pool === "SUI_USDC" ? suiUsdc : deepSui;
+    const entry = (action === "buy" ? book.bestAsk : book.bestBid) ?? 0;
+    if (entry) {
+      const stamp = await chainStamp();
+      const signal: Signal = {
+        id: `sig_${Date.now().toString(36)}`,
+        pool,
+        side: action,
+        entry,
+        spreadBps,
+        regime,
+        checkpoint: stamp?.checkpoint,
+        checkpointTs: stamp?.timestampMs,
+        usedMemories: memoriesUsed.map((m) => m.blobId),
+        ts: Date.now(),
+        graded: false,
+        sample,
+      };
+      store.signals.push(signal);
+      agentState.signals += 1;
+      pushEvent({ type: "signal", text: `${action === "buy" ? "Buy" : "Sell"} ${pool.replace(/_/g, " ")} at ${entry.toFixed(4)} in a ${regime} spread${stamp ? ` at checkpoint ${stamp.checkpoint}` : ""}` });
+      result.signal = signal;
+    }
+  }
+  agentState.lastAction = reply.slice(0, 80);
+  return result;
 }
+
+/** Persist the signal itself as a memory (audit trail). Called after the response is sent. */
+export async function persistSignal(s: Signal) {
+  try {
+    s.signalBlobId = await writeMemory(
+      `Signal issued. The agent said ${s.side} on ${s.pool.replace(/_/g, " ")} at ${s.entry.toFixed(4)} in a ${s.regime} spread regime.`,
+      { kind: "SIGNAL", id: s.id, pool: s.pool, side: s.side, entry: s.entry, regime: s.regime, checkpoint: s.checkpoint, usedMemories: s.usedMemories, ts: s.ts }
+    );
+  } catch (e) {
+    console.error("persistSignal failed:", (e as Error).message);
+  }
+}
+
+export { memoryLive };

@@ -22,26 +22,41 @@ export interface OrderbookData {
   spread?: number;
   bestBid?: number;
   bestAsk?: number;
+  /** indexer means live DeepBook data, fallback means the built in sample numbers */
+  source: "indexer" | "fallback";
 }
+
+// On DeepBook testnet the USDC pools are named DBUSDC, so try the testnet name first.
+const POOL_ALIASES: Record<string, string[]> = {
+  SUI_USDC: ["SUI_DBUSDC", "SUI_USDC"],
+  DEEP_SUI: ["DEEP_SUI"],
+};
 
 // Fetch live orderbook from DeepBook indexer
 export async function getOrderbook(poolName: string = "SUI_USDC", depth: number = 10): Promise<OrderbookData> {
   try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-
-    const res = await fetch(
-      `${INDEXER}/orderbook/${poolName}?level=2&depth=${depth}`,
-      {
-        signal: controller.signal,
-        headers: { "Accept": "application/json" },
-        cache: "no-store",
+    let data: any = null;
+    let lastErr = "no pool candidates";
+    for (const name of POOL_ALIASES[poolName] ?? [poolName]) {
+      try {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 8000);
+        const res = await fetch(`${INDEXER}/orderbook/${name}?level=2&depth=${depth}`, {
+          signal: controller.signal,
+          headers: { Accept: "application/json" },
+          cache: "no-store",
+        });
+        clearTimeout(timeout);
+        if (!res.ok) throw new Error(`HTTP ${res.status} for ${name}`);
+        const json = await res.json();
+        if (!(json.bids?.length || json.asks?.length)) throw new Error(`empty book for ${name}`);
+        data = json;
+        break;
+      } catch (e: any) {
+        lastErr = e.message;
       }
-    );
-    clearTimeout(timeout);
-
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    }
+    if (!data) throw new Error(lastErr);
 
     const bids: [string, string][] = data.bids ?? [];
     const asks: [string, string][] = data.asks ?? [];
@@ -50,7 +65,7 @@ export async function getOrderbook(poolName: string = "SUI_USDC", depth: number 
     const midPrice = bestBid && bestAsk ? (bestBid + bestAsk) / 2 : undefined;
     const spread = bestBid && bestAsk ? bestAsk - bestBid : undefined;
 
-    return { timestamp: Date.now().toString(), bids, asks, midPrice, spread, bestBid, bestAsk };
+    return { timestamp: Date.now().toString(), bids, asks, midPrice, spread, bestBid, bestAsk, source: "indexer" };
   } catch (err: any) {
     console.error("getOrderbook failed:", err.message);
     // Fallback: return mock testnet data so the agent can still reason
@@ -62,6 +77,7 @@ export async function getOrderbook(poolName: string = "SUI_USDC", depth: number 
       spread: 0.005,
       bestBid: 3.245,
       bestAsk: 3.250,
+      source: "fallback",
     };
   }
 }
@@ -155,4 +171,13 @@ export async function cancelOrder(poolId: string, orderId: string): Promise<stri
     options: { showEffects: true },
   });
   return result.digest;
+}
+
+// Cached market status for the interface, so polling does not hammer the indexer
+let marketCache: { at: number; source: "indexer" | "fallback" } | null = null;
+export async function marketStatus(): Promise<{ source: "indexer" | "fallback" }> {
+  if (marketCache && Date.now() - marketCache.at < 20_000) return { source: marketCache.source };
+  const book = await getOrderbook("SUI_USDC", 3);
+  marketCache = { at: Date.now(), source: book.source };
+  return { source: book.source };
 }

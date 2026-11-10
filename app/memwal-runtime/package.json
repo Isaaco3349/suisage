@@ -1,0 +1,11 @@
+{
+  "name": "memwal-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated install for the Walrus Memory SDK, which needs @mysten/sui 2.5 or later while the wallet UI needs 1.x",
+  "dependencies": {
+    "@mysten-incubation/memwal": "0.1.14",
+    "@mysten/seal": "^1.1.0",
+    "@mysten/sui": "^2.5.0"
+  }
+}

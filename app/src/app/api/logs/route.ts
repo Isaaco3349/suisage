@@ -1,5 +1,5 @@
-import { tradeLogs } from "@/lib/agent";
+import { store } from "@/lib/store";
 
 export async function GET() {
-  return Response.json(tradeLogs);
+  return Response.json(store.signals);
 }

@@ -2,355 +2,387 @@
 
 import { useState, useEffect, useRef } from "react";
 import { ConnectButton, useCurrentAccount, useCurrentWallet } from "@mysten/dapp-kit";
+import MemoryPanel, { type MemoryData } from "@/components/MemoryPanel";
 
-interface AgentState {
-  isRunning: boolean;
-  lastAction: string;
-  tradeCount: number;
-  totalPnl: number;
-  openPositions: any[];
-}
-
+interface AgentState { isRunning: boolean; lastAction: string; signals: number }
+interface UsedMemory { blobId: string; sentence: string; retired: boolean }
+interface RunView { reply: string; action: string; memoryOn: boolean; memoriesUsed: UsedMemory[]; retiredSeen: number }
 interface Message {
   role: "user" | "agent";
   content: string;
   timestamp: number;
+  used?: UsedMemory[];
+  badge?: string;
+  diff?: { off: RunView; on: RunView };
 }
 
-interface TradeLog {
-  poolId: string;
-  side: string;
-  price: number;
-  quantity: number;
-  digest: string;
-  blobId: string | null;
-  timestamp: number;
+const I = {
+  spark: <path d="M12 3l1.9 5.6L19.5 10.5l-5.6 1.9L12 18l-1.9-5.6L4.5 10.5l5.6-1.9z" />,
+  lock: <><rect x="5" y="11" width="14" height="9" rx="2.5" /><path d="M8.5 11V8a3.5 3.5 0 017 0v3" /></>,
+  check: <path d="M5 12.5l4.5 4.5L19 7.5" />,
+  up: <path d="M5 16l5-5 3 3 6-7M14 7h5v5" />,
+  down: <path d="M5 8l5 5 3-3 6 7M14 17h5v-5" />,
+  send: <path d="M5 12h14M13 6l6 6-6 6" />,
+};
+const Icon = ({ d, size = 24 }: { d: keyof typeof I; size?: number }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">{I[d]}</svg>
+);
+
+function Slab({ position }: { position: "top" | "bottom" }) {
+  // Maroon field with coral slabs and wedges, after the Shelby banner.
+  const top = (
+    <>
+      <path d="M0 0H372L694 80H0Z" />
+      <path d="M2048 0H1676L1354 80H2048Z" />
+      <path d="M604 0H1444L1392 36Q1372 70 1326 70H722Q676 70 656 36Z" />
+    </>
+  );
+  return (
+    <svg className={`bd ${position}`} viewBox="0 0 2048 80" preserveAspectRatio="none" aria-hidden>
+      {top}
+    </svg>
+  );
 }
 
 export default function Home() {
   const [command, setCommand] = useState("");
   const [messages, setMessages] = useState<Message[]>([
-    {
-      role: "agent",
-      content: "SuiSage online. Connect your wallet to get started, or ask me about current DeepBook market conditions.",
-      timestamp: Date.now(),
-    },
+    { role: "agent", content: "I remember what I learn from my graded signals and I unlearn what the market disproves. Ask for a signal, grade it, then ask again", timestamp: Date.now() },
   ]);
   const [loading, setLoading] = useState(false);
-  const [agentState, setAgentState] = useState<AgentState>({
-    isRunning: false,
-    lastAction: "Idle",
-    tradeCount: 0,
-    totalPnl: 0,
-    openPositions: [],
-  });
-  const [time, setTime] = useState("");
+  const [agentState, setAgentState] = useState<AgentState>({ isRunning: false, lastAction: "Idle", signals: 0 });
+  const [memoryOn, setMemoryOn] = useState(true);
+  const [mem, setMem] = useState<MemoryData | null>(null);
+  const [grading, setGrading] = useState(false);
   const [mounted, setMounted] = useState(false);
-  const [tradeLogs, setTradeLogs] = useState<TradeLog[]>([]);
-  const [logsOpen, setLogsOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const account = useCurrentAccount();
   const { isConnected } = useCurrentWallet();
 
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  useEffect(() => { bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "nearest" }); }, [messages]);
+  useEffect(() => { setMounted(true); }, []);
 
+  async function refreshMemory() {
+    try {
+      const res = await fetch("/api/memory");
+      if (res.ok) setMem(await res.json());
+    } catch {}
+  }
   useEffect(() => {
-    setMounted(true);
-    const tick = () => setTime(new Date().toLocaleTimeString("en-US", { hour12: false }));
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  // Poll trade logs every 10s
-  useEffect(() => {
-    async function fetchLogs() {
-      try {
-        const res = await fetch("/api/logs");
-        if (res.ok) {
-          const data = await res.json();
-          setTradeLogs(data);
-        }
-      } catch {}
-    }
-    fetchLogs();
-    const id = setInterval(fetchLogs, 10000);
+    refreshMemory();
+    const id = setInterval(refreshMemory, 10000);
     return () => clearInterval(id);
   }, []);
 
   useEffect(() => {
     if (isConnected && account) {
       const short = `${account.address.slice(0, 6)}...${account.address.slice(-4)}`;
-      setMessages((m) => [
-        ...m,
-        {
-          role: "agent",
-          content: `Wallet connected: ${short}\n\nI can now see your positions and execute trades on your behalf. What would you like to do?`,
-          timestamp: Date.now(),
-        },
-      ]);
+      setMessages((m) => [...m, { role: "agent", content: `Wallet connected ${short}`, timestamp: Date.now() }]);
     }
   }, [isConnected]);
 
-  async function sendCommand() {
-    if (!command.trim() || loading) return;
-    const userMsg = command.trim();
+  function add(m: Omit<Message, "timestamp">) {
+    setMessages((prev) => [...prev, { ...m, timestamp: Date.now() }]);
+  }
+
+  async function sendCommand(diff = false) {
+    if (loading || (!diff && !command.trim())) return;
+    const userMsg = command.trim() || "Give me a BUY signal on SUI USDC";
     setCommand("");
-    setMessages((m) => [...m, { role: "user", content: userMsg, timestamp: Date.now() }]);
+    add({ role: "user", content: diff ? `${userMsg} with and without memory` : userMsg });
     setLoading(true);
     try {
       const res = await fetch("/api/agent", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ command: userMsg, walletAddress: account?.address }),
+        body: JSON.stringify({ command: userMsg, memory: memoryOn, diff }),
       });
       const data = await res.json();
-      setMessages((m) => [...m, { role: "agent", content: data.result ?? data.error, timestamp: Date.now() }]);
+      if (data.error) add({ role: "agent", content: `Error ${data.error}` });
+      else if (data.diff) add({ role: "agent", content: "Memory Diff", diff: data.diff });
+      else {
+        const r = data.result;
+        add({ role: "agent", content: r.reply, used: r.memoriesUsed, badge: `Memory ${r.memoryOn ? "on" : "off"}  ${r.action.toUpperCase()} ${String(r.pool).replace(/_/g, " ")}` });
+      }
       if (data.state) setAgentState(data.state);
-      // Refresh logs after agent responds
-      const logsRes = await fetch("/api/logs");
-      if (logsRes.ok) setTradeLogs(await logsRes.json());
+      refreshMemory();
     } catch {
-      setMessages((m) => [...m, { role: "agent", content: "Connection error.", timestamp: Date.now() }]);
+      add({ role: "agent", content: "Connection error" });
     } finally {
       setLoading(false);
     }
   }
 
-  const suggestions = [
-    "Analyze SUI/USDC market",
-    "Compare pool spreads",
-    "Best entry point for SUI?",
-    "Current liquidity status",
-  ];
+  async function grade(shiftPct?: number) {
+    setGrading(true);
+    try {
+      const res = await fetch("/api/grade", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true, shiftPct }),
+      });
+      const data = await res.json();
+      if (data.error) add({ role: "agent", content: `Grading error ${data.error}` });
+      else add({ role: "agent", content: data.events?.length ? data.events.map((e: any) => e.text).join("\n") : "No open signals yet. Memory Diff never records a signal, so send a normal message and wait for a buy or sell answer, then grade it" });
+      refreshMemory();
+    } finally {
+      setGrading(false);
+    }
+  }
 
-  const shortAddr = account
-    ? `${account.address.slice(0, 6)}...${account.address.slice(-4)}`
-    : null;
+  const suggestions = ["Give me a BUY signal on SUI USDC", "Give me a SELL signal on SUI USDC", "Is the DEEP SUI spread worth trading"];
+  const c = mem?.counts;
 
   return (
     <>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Syne:wght@400;500;600;700;800&display=swap');
-
+        @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,500;12..96,700;12..96,800&family=DM+Sans:wght@400;500;600;700&display=swap');
+        :root {
+          --maroon: #4b1b2a; --ink: #0c0709; --card: #140a0e; --card2: #1d1015;
+          --coral: #ff8265; --mint: #00e5a0; --cream: #fbeee8; --mute: #b39a9c;
+          --display: 'Bricolage Grotesque', 'DM Sans', system-ui, sans-serif;
+          --body: 'DM Sans', system-ui, sans-serif;
+        }
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-        body { background: #040608; color: #e2e8f0; font-family: 'Syne', sans-serif; overflow: hidden; height: 100vh; }
+        html, body { background: var(--maroon); }
+        body { color: var(--cream); font-family: var(--body); min-height: 100vh; }
 
-        .bg { position: fixed; inset: 0; z-index: 0; background: radial-gradient(ellipse 80% 60% at 10% 0%, rgba(14,165,233,0.07) 0%, transparent 60%), radial-gradient(ellipse 60% 50% at 90% 100%, rgba(99,102,241,0.06) 0%, transparent 60%), radial-gradient(ellipse 40% 40% at 50% 50%, rgba(20,184,166,0.03) 0%, transparent 70%); }
-        .grid-lines { position: fixed; inset: 0; z-index: 0; background-image: linear-gradient(rgba(148,163,184,0.03) 1px, transparent 1px), linear-gradient(90deg, rgba(148,163,184,0.03) 1px, transparent 1px); background-size: 48px 48px; }
-        .noise { position: fixed; inset: 0; z-index: 0; opacity: 0.025; background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E"); background-size: 256px 256px; }
+        .page { position: relative; min-height: 100vh; display: flex; flex-direction: column; }
+        .bd { display: block; width: 100%; height: 9vh; min-height: 52px; fill: var(--coral); flex-shrink: 0; }
+        .bd.top { position: absolute; top: 0; left: 0; z-index: 0; pointer-events: none; }
+        .bd.bottom { margin-top: 28px; transform: scaleY(-1); pointer-events: none; }
 
-        .shell { position: relative; z-index: 1; display: flex; flex-direction: column; height: 100vh; max-width: 1100px; margin: 0 auto; padding: 0 24px; }
+        .shell { position: relative; z-index: 1; display: flex; flex-direction: column; width: 100%; max-width: 1240px; margin: 0 auto; padding: calc(9vh + 6px) 28px 0; gap: 18px; flex: 1; }
 
-        .header { display: flex; align-items: center; justify-content: space-between; padding: 20px 0 16px; border-bottom: 1px solid rgba(148,163,184,0.08); flex-shrink: 0; }
-        .logo-group { display: flex; align-items: center; gap: 14px; }
-        .logo-mark { width: 36px; height: 36px; border-radius: 10px; background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); display: flex; align-items: center; justify-content: center; font-family: 'Space Mono', monospace; font-size: 13px; font-weight: 700; color: #fff; letter-spacing: -1px; flex-shrink: 0; }
-        .logo-text { font-size: 18px; font-weight: 800; letter-spacing: -0.5px; color: #f1f5f9; }
-        .logo-sub { font-family: 'Space Mono', monospace; font-size: 10px; color: #0ea5e9; letter-spacing: 0.12em; text-transform: uppercase; margin-top: 1px; }
-        .net-tag { font-family: 'Space Mono', monospace; font-size: 9px; padding: 3px 8px; background: rgba(99,102,241,0.1); border: 1px solid rgba(99,102,241,0.2); border-radius: 4px; color: #818cf8; letter-spacing: 0.1em; text-transform: uppercase; }
+        .header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex-shrink: 0; }
+        .logo-group { display: flex; align-items: center; gap: 12px; }
+        .logo-mark { width: 42px; height: 42px; border-radius: 50%; background: var(--mint); color: var(--ink); display: flex; align-items: center; justify-content: center; font-family: var(--display); font-size: 20px; font-weight: 800; box-shadow: 0 0 28px rgba(0,229,160,0.35); }
+        .logo-sub { font-size: 12px; color: rgba(251,238,232,0.65); }
+        .logo-text { font-family: var(--display); font-size: 22px; font-weight: 800; letter-spacing: -0.5px; }
+        .live-pill { display: flex; align-items: center; gap: 9px; background: var(--ink); border: 3px solid rgba(255,130,101,0.55); border-radius: 999px; padding: 9px 20px; font-size: 14px; font-weight: 600; }
+        .live-pill i { width: 9px; height: 9px; border-radius: 50%; background: var(--mint); box-shadow: 0 0 10px var(--mint); }
+        .live-pill.off i { background: var(--coral); box-shadow: 0 0 10px var(--coral); }
+        .head-right { display: flex; align-items: center; gap: 10px; }
+        .net-tag { font-size: 11px; font-weight: 600; padding: 7px 12px; background: rgba(12,7,9,0.45); border-radius: 999px; color: rgba(251,238,232,0.8); }
+        .wallet-area button { font-family: var(--body) !important; font-size: 13px !important; font-weight: 700 !important; background: var(--mint) !important; color: var(--ink) !important; border: none !important; border-radius: 999px !important; padding: 11px 20px !important; cursor: pointer !important; }
 
-        .header-right { display: flex; align-items: center; gap: 24px; }
-        .stat { text-align: right; }
-        .stat-label { font-family: 'Space Mono', monospace; font-size: 9px; color: #475569; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 3px; }
-        .stat-value { font-family: 'Space Mono', monospace; font-size: 14px; font-weight: 700; color: #e2e8f0; }
-        .stat-value.green { color: #34d399; }
+        .hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; flex-shrink: 0; }
+        .hero-label { font-size: 14px; color: rgba(251,238,232,0.7); margin-bottom: 2px; }
+        .hero-num { font-family: var(--display); font-weight: 700; font-size: clamp(56px, 9vh, 88px); line-height: 1; letter-spacing: -3px; display: flex; align-items: baseline; gap: 12px; }
+        .hero-num small { font-size: clamp(18px, 3vh, 26px); font-weight: 500; letter-spacing: -0.5px; color: rgba(251,238,232,0.6); }
+        .hero-sub { font-size: 13px; color: rgba(251,238,232,0.65); margin-top: 8px; }
+        .status-row { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+        .spill { display: inline-flex; align-items: center; gap: 7px; background: rgba(12,7,9,0.55); border-radius: 999px; padding: 6px 13px; font-size: 12px; font-weight: 600; }
+        .spill i { width: 7px; height: 7px; border-radius: 50%; background: var(--mint); }
+        .spill.bad i { background: var(--coral); }
+        .spill.bad { color: var(--coral); }
+        .actions { display: flex; gap: 14px; }
+        .act { white-space: nowrap; display: flex; flex-direction: column; align-items: center; gap: 8px; background: none; border: 0; color: var(--cream); font-family: var(--body); font-size: 13px; font-weight: 600; cursor: pointer; }
+        .act .circle { width: 62px; height: 62px; border-radius: 50%; background: var(--ink); display: flex; align-items: center; justify-content: center; transition: transform 0.12s; }
+        .act:hover:not(:disabled) .circle { transform: translateY(-2px); }
+        .act.primary .circle { background: var(--mint); color: var(--ink); box-shadow: 0 0 30px rgba(0,229,160,0.4); }
+        .act.on .circle { box-shadow: inset 0 0 0 2px var(--mint); color: var(--mint); }
+        .act.warn .circle { color: var(--coral); }
+        .act:disabled { opacity: 0.45; cursor: default; }
 
-        .live-badge { display: flex; align-items: center; gap: 6px; background: rgba(14,165,233,0.08); border: 1px solid rgba(14,165,233,0.2); border-radius: 20px; padding: 5px 12px; font-family: 'Space Mono', monospace; font-size: 10px; color: #0ea5e9; letter-spacing: 0.1em; }
-        .live-dot { width: 6px; height: 6px; border-radius: 50%; background: #0ea5e9; animation: pulse 2s ease-in-out infinite; }
-        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: 0.4; transform: scale(0.8); } }
+        .main { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); gap: 14px; align-items: start; }
 
-        .wallet-area { display: flex; align-items: center; gap: 10px; }
-        .wallet-addr { font-family: 'Space Mono', monospace; font-size: 10px; color: #34d399; background: rgba(52,211,153,0.08); border: 1px solid rgba(52,211,153,0.2); border-radius: 20px; padding: 5px 12px; }
-        .wallet-area button { font-family: 'Syne', sans-serif !important; font-size: 12px !important; font-weight: 600 !important; background: linear-gradient(135deg, #0ea5e9, #6366f1) !important; border: none !important; border-radius: 8px !important; color: #fff !important; padding: 7px 14px !important; cursor: pointer !important; }
-
-        .statusbar { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid rgba(148,163,184,0.05); flex-shrink: 0; }
-        .status-left { font-family: 'Space Mono', monospace; font-size: 10px; color: #334155; display: flex; align-items: center; gap: 8px; }
-        .status-action { color: #64748b; max-width: 400px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-        .status-right { font-family: 'Space Mono', monospace; font-size: 10px; color: #334155; }
-
-        .messages { flex: 1; overflow-y: auto; padding: 28px 0; display: flex; flex-direction: column; gap: 20px; scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.1) transparent; }
-        .messages::-webkit-scrollbar { width: 4px; }
-        .messages::-webkit-scrollbar-thumb { background: rgba(148,163,184,0.1); border-radius: 2px; }
-
+        .chat { background: var(--ink); border-radius: 32px; padding: 18px 18px 16px; display: flex; flex-direction: column; min-height: 600px; }
+        .messages { flex: 1; display: flex; flex-direction: column; gap: 16px; padding: 4px 4px 16px; }
         .msg-row { display: flex; flex-direction: column; }
         .msg-row.user { align-items: flex-end; }
-        .msg-row.agent { align-items: flex-start; }
-        .msg-meta { font-family: 'Space Mono', monospace; font-size: 9px; color: #334155; letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; padding: 0 4px; }
-        .msg-bubble { max-width: 72%; padding: 14px 18px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; }
-        .msg-row.user .msg-bubble { background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); color: #fff; border-radius: 18px 18px 4px 18px; box-shadow: 0 4px 24px rgba(14,165,233,0.2); }
-        .msg-row.agent .msg-bubble { background: rgba(15,23,42,0.8); border: 1px solid rgba(148,163,184,0.1); color: #cbd5e1; border-radius: 4px 18px 18px 18px; backdrop-filter: blur(12px); }
+        .msg-meta { white-space: pre; font-size: 11px; color: var(--mute); margin-bottom: 5px; padding: 0 6px; }
+        .msg-bubble { max-width: 86%; padding: 13px 17px; font-size: 14.5px; line-height: 1.6; white-space: pre-wrap; }
+        .msg-row.agent .msg-bubble { background: var(--card2); border-radius: 6px 22px 22px 22px; }
+        .msg-row.user .msg-bubble { background: var(--coral); color: var(--ink); font-weight: 600; border-radius: 22px 22px 6px 22px; }
+        .typing { display: flex; gap: 5px; padding: 15px 18px; background: var(--card2); border-radius: 6px 22px 22px 22px; width: fit-content; }
+        .typing span { width: 6px; height: 6px; border-radius: 50%; background: var(--mute); animation: bounce 1.2s ease-in-out infinite; }
+        .typing span:nth-child(2) { animation-delay: 0.15s; } .typing span:nth-child(3) { animation-delay: 0.3s; }
+        @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-5px); background: var(--mint); } }
 
-        .typing { display: flex; align-items: center; gap: 5px; padding: 14px 18px; background: rgba(15,23,42,0.8); border: 1px solid rgba(148,163,184,0.1); border-radius: 4px 18px 18px 18px; width: fit-content; backdrop-filter: blur(12px); }
-        .typing span { width: 5px; height: 5px; border-radius: 50%; background: #475569; animation: bounce 1.2s ease-in-out infinite; }
-        .typing span:nth-child(2) { animation-delay: 0.15s; }
-        .typing span:nth-child(3) { animation-delay: 0.3s; }
-        @keyframes bounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-5px); background: #0ea5e9; } }
+        .cid { font-weight: 700; letter-spacing: 0.02em; margin-right: 4px; }
+        .badge-line { white-space: pre; font-size: 11px; font-weight: 700; color: var(--mint); margin-top: 10px; letter-spacing: 0.04em; text-transform: uppercase; }
+        .chip { font-size: 12px; line-height: 1.45; color: var(--coral); background: rgba(255,130,101,0.1); border: 1px solid rgba(255,130,101,0.28); border-radius: 12px; padding: 7px 11px; margin-top: 8px; }
+        .chip.ret { color: var(--mute); text-decoration: line-through; border-color: rgba(251,238,232,0.15); background: transparent; }
 
-        .suggestions { display: flex; flex-wrap: wrap; gap: 8px; padding: 0 0 16px; flex-shrink: 0; }
-        .suggestion-btn { font-family: 'Space Mono', monospace; font-size: 11px; padding: 7px 14px; background: rgba(15,23,42,0.6); border: 1px solid rgba(148,163,184,0.1); border-radius: 20px; color: #64748b; cursor: pointer; transition: all 0.15s; }
-        .suggestion-btn:hover { border-color: rgba(14,165,233,0.3); color: #0ea5e9; background: rgba(14,165,233,0.05); }
+        .diff-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; width: 100%; }
+        .diff-card { background: var(--card2); border-radius: 22px; padding: 16px 18px; font-size: 14px; line-height: 1.6; }
+        .diff-card.on { background: var(--coral); color: var(--ink); }
+        .diff-h { display: flex; align-items: center; justify-content: space-between; font-size: 11px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; color: var(--mute); margin-bottom: 8px; }
+        .diff-card.on .diff-h { color: rgba(12,7,9,0.65); }
+        .diff-act { border-radius: 999px; padding: 3px 11px; background: rgba(251,238,232,0.1); color: var(--cream); }
+        .diff-card.on .diff-act { background: var(--ink); color: var(--coral); }
+        .diff-card.on .chip { background: rgba(12,7,9,0.1); border-color: rgba(12,7,9,0.2); color: var(--ink); }
+        .diff-card.on .chip.ret { color: rgba(12,7,9,0.55); }
 
-        .input-area { border-top: 1px solid rgba(148,163,184,0.08); padding: 16px 0 20px; flex-shrink: 0; }
-        .input-row { display: flex; gap: 10px; align-items: center; background: rgba(15,23,42,0.7); border: 1px solid rgba(148,163,184,0.1); border-radius: 14px; padding: 6px 6px 6px 18px; backdrop-filter: blur(12px); transition: border-color 0.15s; }
-        .input-row:focus-within { border-color: rgba(14,165,233,0.3); }
-        .input-field { flex: 1; background: transparent; border: none; outline: none; color: #e2e8f0; font-family: 'Syne', sans-serif; font-size: 14px; padding: 8px 0; }
-        .input-field::placeholder { color: #334155; }
-        .send-btn { background: linear-gradient(135deg, #0ea5e9 0%, #6366f1 100%); border: none; border-radius: 10px; padding: 10px 20px; color: #fff; font-family: 'Syne', sans-serif; font-size: 13px; font-weight: 600; cursor: pointer; transition: opacity 0.15s; white-space: nowrap; flex-shrink: 0; }
-        .send-btn:disabled { opacity: 0.3; cursor: default; }
-        .send-btn:not(:disabled):hover { opacity: 0.85; }
+        .suggestions { display: flex; flex-wrap: wrap; gap: 8px; padding: 6px 2px 12px; flex-shrink: 0; }
+        .suggestion-btn { font-family: var(--body); font-size: 12.5px; font-weight: 500; padding: 8px 14px; background: var(--card2); border: 0; border-radius: 999px; color: var(--cream); cursor: pointer; }
+        .suggestion-btn:hover { background: #2b1a21; }
 
-        /* Trade Log Drawer */
-        .log-drawer { flex-shrink: 0; border-top: 1px solid rgba(148,163,184,0.08); }
-        .log-toggle { display: flex; align-items: center; justify-content: space-between; padding: 10px 0; cursor: pointer; user-select: none; }
-        .log-toggle-left { display: flex; align-items: center; gap: 8px; font-family: 'Space Mono', monospace; font-size: 10px; color: #475569; letter-spacing: 0.1em; text-transform: uppercase; }
-        .log-dot { width: 6px; height: 6px; border-radius: 50%; background: #6366f1; }
-        .log-count { background: rgba(99,102,241,0.15); border: 1px solid rgba(99,102,241,0.2); border-radius: 10px; padding: 1px 7px; font-size: 9px; color: #818cf8; }
-        .log-chevron { font-size: 10px; color: #334155; transition: transform 0.2s; }
-        .log-chevron.open { transform: rotate(180deg); }
-        .log-body { overflow: hidden; max-height: 0; transition: max-height 0.25s ease; }
-        .log-body.open { max-height: 160px; }
-        .log-list { display: flex; flex-direction: column; gap: 4px; padding: 4px 0 12px; overflow-y: auto; max-height: 148px; scrollbar-width: thin; scrollbar-color: rgba(148,163,184,0.1) transparent; }
-        .log-row { display: flex; align-items: center; gap: 12px; font-family: 'Space Mono', monospace; font-size: 10px; color: #475569; padding: 6px 10px; background: rgba(15,23,42,0.5); border: 1px solid rgba(148,163,184,0.06); border-radius: 6px; }
-        .log-side { font-weight: 700; min-width: 32px; }
-        .log-side.buy { color: #34d399; }
-        .log-side.sell { color: #f87171; }
-        .log-pool { color: #64748b; min-width: 72px; }
-        .log-price { color: #94a3b8; flex: 1; }
-        .log-time { color: #334155; }
-        .log-link { color: #6366f1; text-decoration: none; font-size: 9px; }
-        .log-link:hover { color: #818cf8; }
-        .log-empty { font-family: 'Space Mono', monospace; font-size: 10px; color: #334155; padding: 8px 0; text-align: center; }
+        .input-row { display: flex; gap: 10px; align-items: center; background: var(--card2); border-radius: 999px; padding: 6px 6px 6px 22px; flex-shrink: 0; position: sticky; bottom: 12px; z-index: 2; box-shadow: 0 0 0 6px var(--ink); }
+        .input-field { flex: 1; background: transparent; border: none; outline: none; color: var(--cream); font-family: var(--body); font-size: 15px; padding: 10px 0; }
+        .input-field::placeholder { color: var(--mute); }
+        .send-btn { flex-shrink: 0; width: 46px; height: 46px; border-radius: 50%; border: 0; background: var(--mint); color: var(--ink); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+        .send-btn:disabled { opacity: 0.35; cursor: default; }
+
+        @media (max-width: 960px) {
+          .shell { padding-left: 16px; padding-right: 16px; }
+          .main { grid-template-columns: 1fr; }
+          .chat { min-height: 70vh; }
+          .vault { min-height: 420px; }
+          .hero { flex-direction: column; align-items: flex-start; }
+          .actions { flex-wrap: wrap; gap: 14px; }
+          .live-pill { display: none; }
+          .diff-grid { grid-template-columns: 1fr; }
+        }
       `}</style>
 
-      <div className="bg" />
-      <div className="grid-lines" />
-      <div className="noise" />
-
+      <div className="page">
+      <Slab position="top" />
       <div className="shell">
         <header className="header">
           <div className="logo-group">
-            <div className="logo-mark">SS</div>
+            <div className="logo-mark">S</div>
             <div>
-              <div className="logo-text">SuiSage</div>
-              <div className="logo-sub">DeepBook Intelligence</div>
+              <div className="logo-sub">DeepBook copilot</div>
+              <div className="logo-text">SuiSage Recall</div>
             </div>
-            <span className="net-tag">Testnet</span>
           </div>
-          <div className="header-right">
-            <div className="stat">
-              <div className="stat-label">Trades</div>
-              <div className="stat-value">{agentState.tradeCount}</div>
-            </div>
-            <div className="stat">
-              <div className="stat-label">PNL</div>
-              <div className={`stat-value ${agentState.totalPnl >= 0 ? "green" : ""}`}>
-                {agentState.totalPnl >= 0 ? "+" : ""}{agentState.totalPnl.toFixed(2)} SUI
-              </div>
-            </div>
-            <div className="stat">
-              <div className="stat-label">Positions</div>
-              <div className="stat-value">{agentState.openPositions.length}</div>
-            </div>
-            <div className="live-badge">
-              <div className="live-dot" />
-              {time}
-            </div>
-            <div className="wallet-area">
-              {isConnected && shortAddr && (
-                <div className="wallet-addr">● {shortAddr}</div>
-              )}
-              <ConnectButton />
-            </div>
+          <div className={`live-pill ${memoryOn ? "" : "off"}`}>
+            <i />
+            {memoryOn ? "Recalling before every answer" : "Memory is off"}
+          </div>
+          <div className="head-right">
+            <span className="net-tag">Testnet signals and mainnet memory</span>
+            <div className="wallet-area"><ConnectButton /></div>
           </div>
         </header>
 
-        <div className="statusbar">
-          <div className="status-left">
-            <span>›</span>
-            <span className="status-action">{agentState.lastAction}</span>
-          </div>
-          <div className="status-right">DeepBook V3 · Sui Overflow 2026</div>
-        </div>
-
-        <div className="messages">
-          {messages.map((msg, i) => (
-            <div key={i} className={`msg-row ${msg.role}`}>
-              <div className="msg-meta">
-                {msg.role === "agent" ? "SuiSage" : "You"} · {mounted ? new Date(msg.timestamp).toLocaleTimeString() : ""}
+        <section className="hero">
+          <div>
+            <div className="hero-label">Walrus Memory</div>
+            <div className="hero-num">
+              {c?.lessons ?? 0}
+              <small>lessons and {c?.overturned ?? 0} overturned</small>
+            </div>
+            <div className="hero-sub">
+              {mem ? `${c?.memories ?? 0} memories on ${mem.meta.memoryLive ? "mainnet" : "a local mock"} and ${agentState.signals} signals this session` : "Loading"}
+            </div>
+            {mem && (
+              <div className="status-row">
+                <span className={`spill ${mem.meta.tatumHealth?.ok ? "ok" : "bad"}`}>
+                  <i />
+                  {mem.meta.tatumHealth?.ok
+                    ? `Tatum ${mem.meta.tatumHealth.network ?? ""} ${mem.meta.tatumHealth.protocol === "grpc" ? "gRPC" : "JSON RPC"} checkpoint ${mem.meta.tatumHealth.checkpoint}`
+                    : mem.meta.tatum ? "Tatum offline" : "No Tatum key"}
+                </span>
+                {mem.meta.tatumHealth?.ok && (
+                  <span className="spill ok"><i />{mem.meta.tatumHealth.latencyMs} ms gas {mem.meta.tatumHealth.gasPrice} MIST</span>
+                )}
+                <span className={`spill ${mem.meta.market?.source === "indexer" ? "ok" : "bad"}`}>
+                  <i />
+                  {mem.meta.market?.source === "indexer" ? "Live DeepBook data" : "Sample market data"}
+                </span>
+                <span className={`spill ${mem.meta.memoryLive ? "ok" : "bad"}`}>
+                  <i />
+                  {mem.meta.memoryLive ? "Walrus Memory mainnet" : "Memory mock"}
+                </span>
               </div>
-              <div className="msg-bubble">{msg.content}</div>
-            </div>
-          ))}
-          {loading && (
-            <div className="msg-row agent">
-              <div className="msg-meta">SuiSage · thinking</div>
-              <div className="typing"><span /><span /><span /></div>
-            </div>
-          )}
-          <div ref={bottomRef} />
-        </div>
-
-        {messages.length <= 2 && (
-          <div className="suggestions">
-            {suggestions.map((s) => (
-              <button key={s} className="suggestion-btn" onClick={() => setCommand(s)}>{s}</button>
-            ))}
+            )}
           </div>
-        )}
-
-        {/* Walrus Trade Log Drawer */}
-        <div className="log-drawer">
-          <div className="log-toggle" onClick={() => setLogsOpen((o) => !o)}>
-            <div className="log-toggle-left">
-              <div className="log-dot" />
-              Walrus Trade Log
-              <span className="log-count">{tradeLogs.length}</span>
-            </div>
-            <span className={`log-chevron ${logsOpen ? "open" : ""}`}>▲</span>
-          </div>
-          <div className={`log-body ${logsOpen ? "open" : ""}`}>
-            <div className="log-list">
-              {tradeLogs.length === 0 ? (
-                <div className="log-empty">No trades logged yet — ask SuiSage to analyze or recommend a trade</div>
-              ) : (
-                [...tradeLogs].reverse().map((log, i) => (
-                  <div key={i} className="log-row">
-                    <span className={`log-side ${log.side}`}>{log.side.toUpperCase()}</span>
-                    <span className="log-pool">{log.poolId}</span>
-                    <span className="log-price">@ {log.price.toFixed(4)}</span>
-                    <span className="log-time">{mounted ? new Date(log.timestamp).toLocaleTimeString() : ""}</span>
-                    <a
-                      className="log-link"
-                      href={log.blobId ? `https://aggregator.walrus-testnet.walrus.space/v1/blobs/${log.blobId}` : "#"}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                    >
-                      [walrus ↗]
-                    </a>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-
-        <div className="input-area">
-          <div className="input-row">
-            <input
-              className="input-field"
-              value={command}
-              onChange={(e) => setCommand(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendCommand()}
-              placeholder="Ask SuiSage anything about the market..."
-              disabled={loading}
-            />
-            <button className="send-btn" onClick={sendCommand} disabled={loading || !command.trim()}>
-              {loading ? "Thinking..." : "Send →"}
+          <div className="actions">
+            <button className="act primary" title="Ask the same question with memory off and on" onClick={() => sendCommand(true)} disabled={loading}>
+              <span className="circle"><Icon d="spark" /></span>Memory Diff
             </button>
+            <button className={`act ${memoryOn ? "on" : ""}`} onClick={() => setMemoryOn((m) => !m)}>
+              <span className="circle"><Icon d="lock" /></span>Memory {memoryOn ? "on" : "off"}
+            </button>
+            <button className="act" onClick={() => grade()} disabled={grading}>
+              <span className="circle"><Icon d="check" /></span>{grading ? "Grading" : "Grade"}
+            </button>
+            {mem?.meta.demoMode && (
+              <>
+                <button className="act warn" title="Demo mode, simulates a 1.2% price rise" onClick={() => grade(1.2)} disabled={grading}>
+                  <span className="circle"><Icon d="up" /></span>Simulate up
+                </button>
+                <button className="act warn" title="Demo mode, simulates a 1.2% price fall" onClick={() => grade(-1.2)} disabled={grading}>
+                  <span className="circle"><Icon d="down" /></span>Simulate down
+                </button>
+              </>
+            )}
           </div>
+        </section>
+
+        <div className="main">
+          <section className="chat">
+            <div className="messages">
+              {messages.map((msg, i) => (
+                <div key={i} className={`msg-row ${msg.role}`}>
+                  <div className="msg-meta">
+                    {msg.role === "agent" ? "SuiSage" : "You"}  {mounted ? new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : ""}
+                  </div>
+                  {msg.diff ? (
+                    <div className="diff-grid">
+                      {(["off", "on"] as const).map((k) => (
+                        <div key={k} className={`diff-card ${k}`}>
+                          <div className="diff-h">
+                            <span>Memory {k}</span>
+                            <span className="diff-act">{msg.diff![k].action.toUpperCase()}</span>
+                          </div>
+                          <div>{msg.diff![k].reply}</div>
+                          {msg.diff![k].memoriesUsed.map((m) => (
+                            <div key={m.blobId} className={`chip ${m.retired ? "ret" : ""}`}><b className="cid">{m.blobId.slice(0, 8)}</b> {m.sentence.replace(/^Lesson( learned)?[.:] /, "")}</div>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="msg-bubble">
+                      {msg.content}
+                      {msg.badge && <div className="badge-line">{msg.badge}</div>}
+                      {msg.used?.map((m) => (
+                        <div key={m.blobId} className={`chip ${m.retired ? "ret" : ""}`}>memory <b className="cid">{m.blobId.slice(0, 8)}</b> {m.sentence.replace(/^Lesson( learned)?[.:] /, "")}</div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
+              {loading && (
+                <div className="msg-row agent">
+                  <div className="msg-meta">SuiSage recalling</div>
+                  <div className="typing"><span /><span /><span /></div>
+                </div>
+              )}
+              <div ref={bottomRef} />
+            </div>
+
+            {messages.length <= 2 && (
+              <div className="suggestions">
+                {suggestions.map((s) => (
+                  <button key={s} className="suggestion-btn" onClick={() => setCommand(s)}>{s}</button>
+                ))}
+              </div>
+            )}
+
+            <div className="input-row">
+              <input
+                className="input-field"
+                value={command}
+                onChange={(e) => setCommand(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && sendCommand(false)}
+                placeholder="Ask for a signal"
+                disabled={loading}
+              />
+              <button className="send-btn" onClick={() => sendCommand(false)} disabled={loading || !command.trim()} aria-label="Send">
+                <Icon d="send" size={22} />
+              </button>
+            </div>
+          </section>
+
+          <MemoryPanel data={mem} />
         </div>
+      </div>
+      <Slab position="bottom" />
       </div>
     </>
   );
