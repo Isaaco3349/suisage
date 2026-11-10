@@ -7,7 +7,8 @@ import { complete } from "./llm";
 import { recallLessons, writeMemory, memoryLive, type LessonView } from "./memory";
 import { store, pushEvent, regimeOf, type Signal } from "./store";
 
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+let _groq: Groq | null = null;
+const getGroq = () => (_groq ??= new Groq({ apiKey: process.env.GROQ_API_KEY }));
 
 export interface AgentState {
   isRunning: boolean;
@@ -107,7 +108,7 @@ RULES
 - Paper signals only. Never claim a trade was executed.`;
 
   const { text } = await complete(
-    groq as any,
+    getGroq() as any,
     [
       { role: "system", content: system },
       { role: "user", content: opts.input },
