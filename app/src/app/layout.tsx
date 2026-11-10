@@ -15,12 +15,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en">
       <head>
-        <title>SuiSage — DeepBook Intelligence</title>
-        <meta name="description" content="Autonomous DeFi agent on DeepBook. Built for Sui Overflow 2026." />
+        <title>SuiSage Recall</title>
+        <meta name="description" content="A DeFi copilot that remembers and unlearns, built for the Total Recall hackathon with Walrus Memory and Tatum" />
         <link rel="preconnect" href="https://fonts.googleapis.com" />
         <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
       </head>
-      <body style={{ margin: 0, padding: 0, background: "#040608" }}>
+      <body style={{ margin: 0, padding: 0, background: "#4b1b2a" }}>
         <QueryClientProvider client={queryClient}>
           <SuiClientProvider networks={networkConfig} defaultNetwork="testnet">
             <WalletProvider autoConnect>
