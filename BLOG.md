@@ -20,7 +20,13 @@ All Sui reads go through the Tatum gateway. That covers the wallet balance, rece
 
 ## How it learned over time
 
-Describe your own run here after seeding. Say how many signals you ran, which lessons were confirmed, which were overturned, and give one concrete example where the answer changed because of a stored memory, including the memory ids. Say which lessons came from simulated price moves and which came from real moves.
+## How it learned over time
+
+I seeded the agent on Walrus Memory mainnet by running 6 graded signals, 3 buys and 3 sells, with simulated price moves of roughly one percent. Every lesson is flagged as simulated because the moves are not real market moves. The run wrote about 18 memories, and the Walrus Memory console shows N memories in the suisage-recall namespace.
+
+Each new result contradicted an older lesson for the same setup, so the agent overturned it. For example, a buy lesson that gained 1.10% (memory 59X5pZ7w) was overturned after a later buy lost 1.30% (memory 7jH8IBIj).
+
+The visible effect is in Memory Diff. I asked for a BUY signal on SUI USDC twice. With memory off the agent answered BUY. With memory on it answered HOLD and cited memory 7jH8IBIj, because that setup had just lost. The answer changed because of a stored memory.
 
 ## What comes next
 
