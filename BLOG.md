@@ -18,11 +18,10 @@ Recall in Walrus Memory is semantic, so each memory is a sentence plus a json li
 
 All Sui reads go through the Tatum gateway. That covers the wallet balance, recent outgoing transactions, and the latest checkpoint with its timestamp, which anchors each signal and grade to chain time. One small module is the only place that talks to the network.
 
-## How it learned over time
 
 ## How it learned over time
 
-I seeded the agent on Walrus Memory mainnet by running 6 graded signals, 3 buys and 3 sells, with simulated price moves of roughly one percent. Every lesson is flagged as simulated because the moves are not real market moves. The run wrote about 18 memories, and the Walrus Memory console shows N memories in the suisage-recall namespace.
+I seeded the agent on Walrus Memory mainnet by running 6 graded signals, 3 buys and 3 sells, with simulated price moves of roughly one percent. Every lesson is flagged as simulated because the moves are not real market moves. The run wrote about 18 memories, and the Walrus Memory console shows 32 memories in the suisage-recall namespace.
 
 Each new result contradicted an older lesson for the same setup, so the agent overturned it. For example, a buy lesson that gained 1.10% (memory 59X5pZ7w) was overturned after a later buy lost 1.30% (memory 7jH8IBIj).
 
