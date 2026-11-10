@@ -5,7 +5,9 @@ A DeFi copilot that remembers its mistakes and unlearns them.
 Built for the Total Recall hackathon by Tatum and Walrus Memory. Track 3 Consumer Finance Apps, with entries for Best Walrus Memory.
 
 Demo: https://suisage-one.vercel.app
+
 Blog: https://github.com/Isaaco3349/suisage/blob/main/BLOG.md
+
 Video:https://www.loom.com/share/02d3a364854e4fb5ad785b71163cff5e
 
 ## The problem
